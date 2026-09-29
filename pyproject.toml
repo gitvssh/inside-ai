@@ -1,0 +1,22 @@
+[project]
+name = "inside-ai"
+version = "0.1.0"
+description = "Show coding-agent reasoning from Claude Code, Codex, and agy in Korean, next to the CLI"
+requires-python = ">=3.11"
+license = "MIT"
+readme = "README.md"
+dependencies = []
+
+[project.scripts]
+inside-ai = "inside_ai.cli:main"
+ia = "inside_ai.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
