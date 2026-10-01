@@ -37,7 +37,7 @@ def test_translate_uses_system_prompt_and_skips_thought_parts(monkeypatch):
 
     assert seen["body"]["systemInstruction"]["parts"][0]["text"] == PLAIN.system_prompt
     assert seen["body"]["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "low"}
-    assert b.id == "gemini:gemini-3.8-flash:v4:plain"
+    assert b.id == f"gemini:gemini-3.8-flash:v4:plain:{PLAIN.fingerprint}"
 
 
 def test_retries_transient_errors_then_gives_up_on_client_errors(monkeypatch):
@@ -74,9 +74,10 @@ def test_key_from_env_then_config_command(monkeypatch, tmp_path):
     monkeypatch.setenv("IA_CONFIG", str(cfg))
     with pytest.raises(ApiKeyError, match="key_command"):
         load_api_key()  # 설정 파일 없음
-    cfg.write_text('[gemini]\nkey_command = "printf cmdkey"\n')
+    import sys
+    cfg.write_text('[gemini]\nkey_command = ' + json.dumps([sys.executable, "-c", "print('cmdkey')"]) + '\n')
     assert load_api_key() == "cmdkey"
-    cfg.write_text('[gemini]\nkey_command = "false"\nkey_hint = "unlock first"\n')
+    cfg.write_text('[gemini]\nkey_command = ' + json.dumps([sys.executable, "-c", "raise SystemExit(1)"]) + '\nkey_hint = "unlock first"\n')
     with pytest.raises(ApiKeyError, match="unlock first"):
         load_api_key()
 

@@ -4,7 +4,7 @@ import subprocess
 import time
 
 import pytest
-from conftest import claude_rec, write_jsonl
+from conftest import SLEEPER, claude_rec, write_jsonl
 
 from inside_ai import links, view
 from inside_ai.cache import TranslationCache
@@ -28,7 +28,7 @@ class Upper:
 
 
 def test_view_translates_in_order_and_marks_failures(roots, tmp_path):
-    proc = subprocess.Popen(["sleep", "2"])
+    proc = subprocess.Popen([*SLEEPER, "2"])
     link = links.Link.create("claude", "/w", proc.pid, "new", "S1", [])
     link.save()
     write_jsonl(
@@ -56,7 +56,7 @@ def test_renderer_passes_recent_context(roots, tmp_path):
             seen.append(list(recent or []))
             return "번역:" + text
 
-    proc = subprocess.Popen(["sleep", "1.5"])
+    proc = subprocess.Popen([*SLEEPER, "1.5"])
     link = links.Link.create("claude", "/w", proc.pid, "new", "S2", [])
     link.save()
     write_jsonl(roots["claude"] / "-w" / "S2.jsonl",

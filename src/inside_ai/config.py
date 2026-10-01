@@ -10,8 +10,13 @@
     key_hint = "pass unlock 후 다시 실행하세요"  # 명령이 실패했을 때 창에 보여줄 안내
     model = "gemini-3.8-flash"
 
-코드에는 개인 환경(비밀 저장소 경로 등)을 두지 않고 이 파일에 둔다. `ia setup`은 [translation]의
-키만 고치고 나머지 내용은 그대로 둔다.
+    [persona]             # 번역 말투(personas.py). 없으면 auto
+    default = "auto"
+    [persona.agents]      # 관찰하는 CLI별 예외(선택)
+    claude = "polite"
+
+코드에는 개인 환경(비밀 저장소 경로 등)을 두지 않고 이 파일에 둔다. `ia setup`은 [translation]·[persona]의
+키만 고치고 나머지 내용은 그대로 둔다. 파일은 UTF-8이다. Windows에서도 위치는 사용자 홈 아래 같은 경로다.
 """
 
 from __future__ import annotations
@@ -22,6 +27,7 @@ import math
 import os
 import re
 import tempfile
+import time
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,10 +50,10 @@ def config_path() -> Path:
 def load() -> dict:
     try:
         with config_path().open("rb") as f:
-            data = tomllib.load(f)
+            data = tomllib.loads(f.read().decode("utf-8-sig"))
     except FileNotFoundError:
         return {}
-    except (OSError, tomllib.TOMLDecodeError) as e:
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
         raise ValueError(f"설정 파일을 읽지 못했습니다: {config_path()} ({e})") from None
     return data if isinstance(data, dict) else {}
 
@@ -129,40 +135,103 @@ def _key_line(key: str) -> re.Pattern:
     return re.compile(rf"^\s*{re.escape(key)}\s*=")
 
 
-def update_translation(values: dict[str, object | None], path: Path | None = None) -> bool:
-    """[translation] 표의 키만 바꾼다. 값이 None이면 그 키를 지운다. 다른 내용·주석·순서는 그대로 둔다.
+def _table_name(header: str) -> str:
+    return ".".join(part.strip() for part in header.split("."))
 
-    반환: 파일이 바뀌었으면 True. 결과를 다시 읽어 의도한 값인지 확인한 뒤 원자적으로 바꾼다.
+
+def update_translation(values: dict[str, object | None], path: Path | None = None) -> bool:
+    """[translation] 표의 키만 바꾼다. 값이 None이면 그 키를 지운다. 다른 내용·주석·순서는 그대로 둔다."""
+    return update_tables({"translation": values}, path)
+
+
+def update_tables(changes: dict[str, dict[str, object | None]], path: Path | None = None) -> bool:
+    """여러 표(예: "translation", "persona", "persona.agents")의 키만 한 번에 바꾼다.
+
+    값이 None이면 그 키를 지운다. 다른 내용·주석·순서·줄바꿈 형식은 그대로 둔다.
+    반환: 파일이 바뀌었으면 True. 결과를 다시 읽어 요청한 키 외에는 아무것도 바뀌지 않았는지 확인한 뒤
+    원자적으로 바꾼다. 확인에 실패하면 파일을 그대로 두고 ValueError.
     """
     path = path or config_path()
     try:
-        original = path.read_text()
+        with path.open("r", encoding="utf-8", newline="") as f:
+            original = f.read()
     except FileNotFoundError:
         original = ""
+    except UnicodeDecodeError:
+        raise ValueError(f"설정 파일이 UTF-8이 아니라 고치지 않았습니다: {path}") from None
+    # PowerShell 5.1의 UTF-8 저장은 BOM을 붙인다. 파싱할 때만 떼고 저장 시 보존한다.
+    prefix = "\ufeff" if original.startswith("\ufeff") else ""
+    original = original[len(prefix):]
     before = {}
     if original:
         try:
             before = tomllib.loads(original)
         except tomllib.TOMLDecodeError as e:
             raise ValueError(f"설정 파일이 TOML 형식이 아니라 고치지 않았습니다: {path} ({e})") from None
+    nl = "\r\n" if "\r\n" in original else "\n"
+    text = original
+    for table, values in changes.items():
+        text = _edit_table(text, table, values, nl)
+    if text == original:
+        return False
+    # TOML의 여러 줄 문자열에도 표·키처럼 보이는 줄이 있을 수 있다. 정규식으로 만든
+    # 후보가 요청한 키 외의 값을 하나라도 바꾸면 파일을 쓰지 않는다.
+    expected = copy.deepcopy(before)
+    for table, values in changes.items():
+        node = expected
+        for part in table.split("."):
+            node = node.setdefault(part, {})
+            if not isinstance(node, dict):
+                raise ValueError(f"설정 파일의 [{table}]을 안전하게 고칠 수 없습니다: {path}")
+        for key, value in values.items():
+            if value is None:
+                node.pop(key, None)
+            else:
+                node[key] = value
+    try:
+        parsed = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        parsed = None
+    if parsed != _drop_empty_new(expected, before):
+        raise ValueError(
+            f"설정 파일을 안전하게 고칠 수 없어 그대로 두었습니다(여러 줄 문자열·점 표기·인라인 표 등). {path}를 직접 확인하세요."
+        )
+    atomic_write(path, prefix + text)
+    return True
+
+
+def _drop_empty_new(expected: dict, before: dict) -> dict:
+    """키를 지우기만 하려다 새로 생긴 빈 표는 비교에서 뺀다(파일에도 만들지 않으므로)."""
+    out = {}
+    for k, v in expected.items():
+        if isinstance(v, dict):
+            prev = before.get(k) if isinstance(before.get(k), dict) else None
+            v = _drop_empty_new(v, prev or {})
+            if not v and prev is None:
+                continue
+        out[k] = v
+    return out
+
+
+def _edit_table(original: str, table: str, values: dict[str, object | None], nl: str) -> str:
     lines = original.splitlines(keepends=True)
-    if lines and not lines[-1].endswith("\n"):
-        lines[-1] += "\n"
+    if lines and not lines[-1].endswith(("\n", "\r")):
+        lines[-1] += nl
 
     start = end = None
     for i, line in enumerate(lines):
         m = _HEADER.match(line)
         if start is None:
-            if m and not _ARRAY_HEADER.match(line) and m.group(1) == "translation":
+            if m and not _ARRAY_HEADER.match(line) and _table_name(m.group(1)) == table:
                 start = i
         elif m or _ARRAY_HEADER.match(line):
             end = i
             break
     if start is None:
-        block = ["[translation]\n"] + [f"{k} = {_toml(v)}\n" for k, v in values.items() if v is not None]
+        block = [f"[{table}]{nl}"] + [f"{k} = {toml_value(v)}{nl}" for k, v in values.items() if v is not None]
         if len(block) == 1:
-            return False
-        sep = ["\n"] if lines and lines[-1].strip() else []
+            return original
+        sep = [nl] if lines and lines[-1].strip() else []
         lines = lines + sep + block
     else:
         end = len(lines) if end is None else end
@@ -174,42 +243,18 @@ def update_translation(values: dict[str, object | None], path: Path | None = Non
                 if idx is not None:
                     del body[idx]
             elif idx is not None:
-                body[idx] = f"{key} = {_toml(value)}\n"
+                body[idx] = f"{key} = {toml_value(value)}{nl}"
             else:
                 insert_at = 0
                 for i, line in enumerate(body):  # 표의 마지막 키 다음(뒤쪽 빈 줄·주석 앞)에 넣는다
                     if line.strip() and not line.lstrip().startswith("#"):
                         insert_at = i + 1
-                body.insert(insert_at, f"{key} = {_toml(value)}\n")
+                body.insert(insert_at, f"{key} = {toml_value(value)}{nl}")
         lines = lines[: start + 1] + body + lines[end:]
-
-    text = "".join(lines)
-    if text == original:
-        return False
-    # TOML의 여러 줄 문자열에도 표·키처럼 보이는 줄이 있을 수 있다. 정규식으로 만든
-    # 후보가 요청한 키 외의 값을 하나라도 바꾸면 파일을 쓰지 않는다.
-    expected = copy.deepcopy(before)
-    table = expected.setdefault("translation", {})
-    if not isinstance(table, dict):
-        raise ValueError(f"설정 파일의 [translation]을 안전하게 고칠 수 없습니다: {path}")
-    for key, value in values.items():
-        if value is None:
-            table.pop(key, None)
-        else:
-            table[key] = value
-    try:
-        parsed = tomllib.loads(text)
-    except tomllib.TOMLDecodeError:
-        parsed = None
-    if parsed != expected:
-        raise ValueError(
-            f"설정 파일을 안전하게 고칠 수 없어 그대로 두었습니다(여러 줄 문자열·점 표기 등). {path}를 직접 확인하세요."
-        )
-    _atomic_write(path, text)
-    return True
+    return "".join(lines)
 
 
-def _toml(value: object) -> str:
+def toml_value(value: object) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, (int, float)):
@@ -217,20 +262,39 @@ def _toml(value: object) -> str:
     return json.dumps(str(value), ensure_ascii=False)  # JSON 문자열은 TOML 기본 문자열로도 유효하다
 
 
-def _atomic_write(path: Path, text: str) -> None:
+_toml = toml_value  # 0.2 호환 이름
+
+
+def atomic_write(path: Path, text: str, new_mode: int = 0o600) -> None:
+    """UTF-8로 임시 파일에 쓴 뒤 바꿔 넣는다. 기존 파일의 권한을 유지한다(Windows는 읽기 전용 여부만)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         mode = path.stat().st_mode & 0o777
     except FileNotFoundError:
-        mode = 0o600
-    fd, tmp = tempfile.mkstemp(prefix=".config-", suffix=".toml", dir=path.parent)
+        mode = new_mode
+    fd, tmp = tempfile.mkstemp(prefix=".config-", suffix=".tmp", dir=path.parent)
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
             f.write(text)
             f.flush()
             os.fsync(f.fileno())
         os.chmod(tmp, mode)
-        os.replace(tmp, path)
+        _replace(tmp, path)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
+
+
+_atomic_write = atomic_write  # 0.2 호환 이름
+
+
+def _replace(src: str, dst: Path) -> None:
+    # Windows에서는 백신·편집기가 잠시 파일을 열고 있으면 바꿔 넣기가 거부될 수 있어 잠깐 다시 시도한다.
+    for attempt in range(10 if os.name == "nt" else 1):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if os.name != "nt" or attempt == 9:
+                raise
+            time.sleep(0.05 * (attempt + 1))

@@ -6,7 +6,9 @@ CLI 번역기는 사용자가 이미 로그인한 CLI를 '번역 한 건'짜리 
 - 매번 빈 임시 작업 폴더에서 새로 실행한다. 사용자의 코딩 세션을 이어 쓰지 않고, 그 세션에 지시를 넣지 않는다.
 - 도구·MCP·훅·스킬·프로젝트 지침은 CLI가 허용하는 만큼 끈다. 권한 우회 플래그는 쓰지 않는다.
 - 표준출력의 최종 응답만 번역문으로 쓴다. stderr·프로토콜 로그는 번역문으로 보여주지 않는다.
-- 시간 제한을 넘기면 프로세스 그룹째 끝낸다. 창이 닫힐 때도 남은 번역 프로세스를 정리한다.
+- 시간 제한을 넘기면 하위 프로세스까지 끝낸다(POSIX 프로세스 그룹, Windows Job Object — oscompat.py).
+  창이 닫힐 때도 남은 번역 프로세스를 정리한다.
+- Windows의 npm .cmd 런처는 cmd.exe를 거치지 않고 검증한 패키지 엔트리를 node로 직접 실행한다.
 
 CLI별로 끌 수 있는 범위가 다르다(docs/install.md의 '격리 수준' 참고).
 - claude: --tools ""(도구 없음), --strict-mcp-config(MCP 없음), --restricted(사용자·프로젝트 설정 파일 무시),
@@ -33,7 +35,7 @@ import time
 from contextlib import contextmanager
 from typing import Callable
 
-from . import own_sessions
+from . import oscompat, own_sessions
 from .config import TranslationSettings
 from .personas import PLAIN, Persona
 
@@ -99,29 +101,7 @@ _active_lock = threading.Lock()
 
 
 def _kill(p: subprocess.Popen, grace: float = 2.0) -> None:
-    # 리더가 먼저 끝나도 같은 그룹의 자식이 파이프를 잡고 있을 수 있다.
-    # p.wait() 성공과 프로세스 그룹 전체 종료는 다르다.
-    try:
-        os.killpg(p.pid, signal.SIGTERM)
-    except (ProcessLookupError, PermissionError):
-        p.poll()
-        return
-    deadline = time.monotonic() + grace
-    while time.monotonic() < deadline:
-        p.poll()  # 좀비 리더를 회수한 뒤 그룹의 생존 여부를 확인한다.
-        try:
-            os.killpg(p.pid, 0)
-        except (ProcessLookupError, PermissionError):
-            return
-        time.sleep(0.02)
-    try:
-        os.killpg(p.pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        pass
-    try:
-        p.wait(timeout=2)
-    except subprocess.TimeoutExpired:
-        pass
+    oscompat.kill_tree(p, grace)
 
 
 def terminate_all() -> None:
@@ -143,7 +123,7 @@ def process_lifetime():
 
     restore = {}
     if threading.current_thread() is threading.main_thread():
-        for sig in (signal.SIGHUP, signal.SIGTERM):
+        for sig in oscompat.termination_signals():  # POSIX: SIGHUP·SIGTERM, Windows: SIGBREAK·SIGTERM
             restore[sig] = signal.signal(sig, exit_on_signal)
     try:
         yield
@@ -166,15 +146,7 @@ def run_cli(
     on_line이 문자열을 돌려주면 그 이유로 즉시 중단한다(TranslatorError).
     """
     try:
-        p = subprocess.Popen(
-            argv,
-            cwd=cwd,
-            env=env,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,  # 시간 초과 때 CLI가 띄운 하위 프로세스까지 함께 끝낸다
-        )
+        p = oscompat.spawn_isolated(argv, cwd, env)  # 시간 초과 때 CLI가 띄운 하위 프로세스까지 함께 끝낸다
     except OSError as e:
         raise TranslatorError(f"{os.path.basename(argv[0])} 실행 실패: {e.strerror or e}") from None
     with _active_lock:
@@ -185,7 +157,7 @@ def run_cli(
     def write() -> None:
         try:
             with p.stdin:
-                p.stdin.write(stdin_text.encode())
+                p.stdin.write(stdin_text.encode("utf-8"))
         except (BrokenPipeError, OSError, ValueError):
             pass
 
@@ -267,14 +239,26 @@ class CliBackend:
         self.model = model
         self.timeout = timeout
         self.persona = persona
-        self.binary = binary or shutil.which(self.provider)
-        self.id = f"{self.provider}:{model or 'default'}:{PROMPT_VERSION}:{persona.key}"
+        if binary:
+            self.command = oscompat.Command(self.provider, binary, (binary,), "exe")
+        else:
+            self.command = oscompat.find_command(self.provider)
+        self.binary = self.command.path
+        # 말투는 ID와 최종 지시 내용 해시로 구분한다(같은 이름의 사용자 말투 내용이 바뀌어도 캐시 분리).
+        self.id = f"{self.provider}:{model or 'default'}:{PROMPT_VERSION}:{persona.key}:{persona.fingerprint}"
+
+    @property
+    def launch(self) -> list[str]:
+        """인자 앞에 붙는 실행 부분([실행 파일] 또는 Windows npm 런처의 [node, 스크립트])."""
+        return list(self.command.argv or (self.provider,))
 
     def check(self) -> None:
-        if not self.binary:
+        if not self.command.found:
             raise TranslatorUnavailable(
                 f"번역기로 고른 `{self.provider}` 명령을 찾을 수 없습니다. 설치하거나 `ia setup`에서 다른 번역기를 고르세요."
             )
+        if not self.command.usable:
+            raise TranslatorUnavailable(f"번역기 `{self.provider}`를 안전하게 실행할 수 없습니다. {self.command.problem}")
 
     def translate(self, text: str, recent: list[tuple[str, str]] | None = None) -> str:
         self.check()
@@ -297,7 +281,7 @@ class ClaudeBackend(CliBackend):
 
     def argv(self) -> list[str]:
         cmd = [
-            self.binary or "claude", "-p",
+            *self.launch, "-p",
             "--output-format", "json",
             "--tools", "",
             "--disable-slash-commands",
@@ -332,13 +316,15 @@ CODEX_ABORT_ITEMS = {"command_execution", "file_change", "mcp_tool_call", "web_s
 _codex_features: dict[str, set[str]] = {}
 
 
-def codex_features(binary: str) -> set[str]:
+def codex_features(launch: list[str] | str) -> set[str]:
     """`codex features list`(로컬)로 지금 버전이 아는 기능 이름. 실패하면 빈 집합."""
+    launch = [launch] if isinstance(launch, str) else list(launch)
+    binary = "\0".join(launch)
     if binary not in _codex_features:
         names: set[str] = set()
         try:
-            r = subprocess.run([binary, "features", "list"], capture_output=True, text=True, timeout=15,
-                               stdin=subprocess.DEVNULL)
+            r = subprocess.run([*launch, "features", "list"], capture_output=True, text=True, timeout=15,
+                               encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL)
             if r.returncode == 0:
                 for line in r.stdout.splitlines():
                     cols = line.split()
@@ -355,10 +341,9 @@ class CodexBackend(CliBackend):
     label = "Codex"
 
     def argv(self, workdir: str, out_file: str) -> list[str]:
-        binary = self.binary or "codex"
-        known = codex_features(binary)
+        known = codex_features(self.launch)
         cmd = [
-            binary, "exec",
+            *self.launch, "exec",
             "--ephemeral",
             "--ignore-user-config",
             "--ignore-rules",
@@ -419,7 +404,7 @@ class AgyBackend(CliBackend):
 
     def argv(self) -> list[str]:
         cmd = [
-            self.binary or "agy",
+            *self.launch,
             "--input-format", "stream-json",  # text 형식은 stdin을 읽지 않는다. stream-json만 stdin으로 받는다.
             "--output-format", "stream-json",
             "--disable-slash-commands",

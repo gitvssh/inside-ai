@@ -40,10 +40,13 @@ def load_api_key() -> str:
             f"Gemini API 키가 없습니다. GEMINI_API_KEY를 설정하거나 {config.config_path()}에 "
             "[gemini] key_command를 적어 주세요."
         )
-    argv = shlex.split(command) if isinstance(command, str) else [str(a) for a in command]
+    argv = _split(command) if isinstance(command, str) else [str(a) for a in command]
+    if not argv:
+        raise ApiKeyError("key_command가 비어 있습니다.")
     hint = cfg.get("key_hint") or "key_command 설정을 확인하세요."
     try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=15)
+        r = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
+                           stdin=subprocess.DEVNULL)
     except FileNotFoundError:
         raise ApiKeyError(f"key_command의 명령을 찾을 수 없습니다: {argv[0]}") from None
     except subprocess.TimeoutExpired:
@@ -51,6 +54,13 @@ def load_api_key() -> str:
     if r.returncode != 0 or not r.stdout.strip():
         raise ApiKeyError(f"key_command로 키를 받지 못했습니다. {hint}")
     return r.stdout.strip()
+
+
+def _split(command: str) -> list[str]:
+    """key_command 문자열을 인자로 나눈다(셸 없이 실행). Windows 경로의 \\는 그대로 둔다(배열 형식 권장)."""
+    if os.name != "nt":
+        return shlex.split(command)
+    return [t[1:-1] if len(t) >= 2 and t[0] == t[-1] and t[0] in "\"'" else t for t in shlex.split(command, posix=False)]
 
 
 class GeminiBackend:
@@ -69,7 +79,7 @@ class GeminiBackend:
         self._key = api_key
         self.timeout = timeout
         self.retries = retries
-        self.id = f"gemini:{self.model}:{PROMPT_VERSION}:{persona.key}"
+        self.id = f"gemini:{self.model}:{PROMPT_VERSION}:{persona.key}:{persona.fingerprint}"
 
     @property
     def key(self) -> str:
@@ -78,7 +88,7 @@ class GeminiBackend:
         return self._key
 
     def _body(self, text: str, recent: list[tuple[str, str]] | None = None) -> dict:
-        cfg: dict = {"temperature": 0.3 if self.persona is PLAIN else 0.6, "maxOutputTokens": 8192}
+        cfg: dict = {"temperature": 0.6 if self.persona.expressive else 0.3, "maxOutputTokens": 8192}
         if self.model.startswith("gemini-3") and "lite" not in self.model:
             cfg["thinkingConfig"] = {"thinkingLevel": "low"}  # 번역에 긴 추론은 필요 없다(지연 1~2초)
         return {

@@ -6,7 +6,7 @@ import os
 import sys
 from datetime import datetime, timezone
 
-from . import __version__
+from . import __version__, oscompat
 from .collector import Collector, Event
 from .model import Session
 from .sources import ALL_SOURCES
@@ -20,7 +20,7 @@ def _duration(value: str) -> float:
 
 
 def _project(cwd: str | None) -> str:
-    return os.path.basename(cwd.rstrip("/")) if cwd else "-"
+    return oscompat.basename(cwd) if cwd else "-"
 
 
 def _sources(names: list[str] | None):
@@ -107,10 +107,13 @@ def cmd_watch(args) -> int:
 
     def service_for(provider: str):
         if provider not in services:
-            from .personas import persona_for
+            from .personas import persona_or_fallback
             from .view import Screen, make_service
 
-            services[provider] = make_service(Screen(sys.stderr), True, persona_for(provider))
+            persona, problem = persona_or_fallback(provider)
+            if problem:
+                print(problem, file=sys.stderr, flush=True)
+            services[provider] = make_service(Screen(sys.stderr), True, persona)
         return services[provider]
     sessions = col.discover()
     if not args.jsonl:
@@ -167,6 +170,7 @@ def _lazy(module: str):
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
+    oscompat.configure_stdio()
     from .wrap import PROVIDERS
 
     if argv and argv[0] in PROVIDERS:
@@ -209,13 +213,37 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--original", action="store_true", help="번역하지 않고 원문 표시 (IA_TRANSLATE=0과 같음)")
     sp.set_defaults(func=cmd_view)
 
-    sp = sub.add_parser("setup", help="번역기 선택(agy·claude·codex·gemini-api·none). 다른 설정은 보존")
+    sp = sub.add_parser("setup", help="번역기·말투 선택(agy·claude·codex·gemini-api·none). 다른 설정은 보존")
     sp.add_argument("--translator", help="agy | claude | codex | gemini-api | none (주면 묻지 않음)")
     sp.add_argument("--model", help="번역에 쓸 모델 ID(생략하면 현재값 유지, 처음이면 CLI 기본 모델)")
     sp.add_argument("--default-model", action="store_true", help="모델 지정을 지우고 CLI 기본 모델 사용")
     sp.add_argument("--timeout", type=float, help="번역 한 건 최대 초")
+    sp.add_argument("--persona", metavar="ID", help="번역 말투(ia persona list). 이것만 주면 번역기·모델은 그대로 둠")
+    sp.add_argument("--for-agent", choices=["claude", "codex", "agy"],
+                    help="--persona를 이 CLI(관찰 대상)에만 적용. --persona inherit로 예외 삭제")
     sp.add_argument("-y", "--yes", action="store_true", help="터미널이어도 묻지 않음")
     sp.set_defaults(func=_lazy("setup_cmd"))
+
+    sp = sub.add_parser("persona", help="번역 말투 목록·만들기·미리보기")
+    psub = sp.add_subparsers(dest="persona_cmd", required=True)
+    pp = psub.add_parser("list", help="쓸 수 있는 말투와 CLI별 적용 상태")
+    pp.add_argument("--json", action="store_true", help="JSON으로 출력(에이전트용)")
+    pp = psub.add_parser("show", help="말투 하나의 내용")
+    pp.add_argument("id")
+    pp = psub.add_parser("create", help="사용자 말투 만들기(설정 폴더 personas/<id>.toml)")
+    pp.add_argument("id", help="영문 소문자·숫자·-·_ (예: my-tone)")
+    pp.add_argument("--style", required=True, help="말투 설명(자유 형식, 800자 이하)")
+    pp.add_argument("--name", help="표시 이름(생략하면 ID)")
+    pp.add_argument("--color", help="창 제목 색 #RRGGBB(선택)")
+    pp.add_argument("--force", action="store_true", help="같은 ID가 있으면 덮어쓰기")
+    pp = psub.add_parser("preview", help="고정 합성 예문을 실제 번역기·말투로 번역(사용량 소비)")
+    pp.add_argument("--persona", metavar="ID", help="미리 볼 말투(생략하면 --agent에 지금 적용되는 말투)")
+    pp.add_argument("--agent", choices=["claude", "codex", "agy"], default="claude",
+                    help="관찰하는 CLI(auto 말투·CLI별 설정 판단용, 기본 claude)")
+    pp.add_argument("--translator", help="설정 대신 쓸 번역기(설정은 바꾸지 않음)")
+    pp.add_argument("--model", help="설정 대신 쓸 모델 ID")
+    pp.add_argument("--json", action="store_true", help="JSON으로 출력")
+    sp.set_defaults(func=_lazy("persona_cmd"))
 
     sp = sub.add_parser("doctor", help="설치·CLI·창·번역 설정 점검(기본은 모델 호출 없음)")
     sp.add_argument("--json", action="store_true", help="JSON으로 출력")
@@ -225,7 +253,7 @@ def main(argv: list[str] | None = None) -> int:
     sp.set_defaults(func=_lazy("doctor"))
 
     args = p.parse_args(argv)
-    if args.cmd in ("watch", "doctor"):
+    if args.cmd in ("watch", "doctor", "persona"):
         from .translators import process_lifetime
 
         with process_lifetime():

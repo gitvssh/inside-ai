@@ -1,3 +1,5 @@
+from conftest import posix_only
+
 from inside_ai.wrap import plan
 
 
@@ -46,6 +48,7 @@ def test_agy_modes():
     assert plan("agy", ["-p", "hi"]).mode == "new"
 
 
+@posix_only
 def test_hosts_tmux_only_outside_tmux_without_wt(monkeypatch):
     import sys
 

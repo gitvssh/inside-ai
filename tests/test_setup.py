@@ -1,13 +1,14 @@
 """ia setup / ia doctor: 실제 프로세스로 실행(가짜 CLI, 임시 HOME·설정). 합성 데이터만 쓴다."""
 
 import json
+import os
 import subprocess
 import sys
 import tomllib
 from pathlib import Path
 
 import pytest
-from conftest import fake_cli
+from conftest import fake_cli, os_env, search_path
 
 import inside_ai
 
@@ -39,8 +40,8 @@ def env(tmp_path):
     home.mkdir()
     bindir = tmp_path / "bin"
     e = {
-        "HOME": str(home),
-        "PATH": str(bindir),  # 실제 CLI가 보이지 않게 가짜 CLI만 둔다
+        **os_env(home),
+        "PATH": search_path(bindir),  # 실제 CLI가 보이지 않게 가짜 CLI만 둔다(Windows는 node 폴더 추가)
         "IA_CONFIG": str(tmp_path / "cfg" / "config.toml"),
         "INSIDE_AI_STATE_DIR": str(tmp_path / "state"),
         "FAKE_LOG": str(tmp_path / "calls.jsonl"),
@@ -52,17 +53,17 @@ def env(tmp_path):
 
 def add(env, *names):
     for n in names:
-        fake_cli(Path(env["PATH"].split(":")[0]), n, RECORDER)
+        fake_cli(Path(env["PATH"].split(os.pathsep)[0]), n, RECORDER)
 
 
 def ia(env, *args, stdin=None):
     return subprocess.run([sys.executable, "-m", "inside_ai", *args], env=env, capture_output=True, text=True,
-                          input=stdin, timeout=60)
+                          encoding="utf-8", errors="replace", input=stdin, timeout=60)
 
 
 def cfg(env):
     p = Path(env["IA_CONFIG"])
-    return tomllib.loads(p.read_text()) if p.exists() else None
+    return tomllib.loads(p.read_text(encoding="utf-8")) if p.exists() else None
 
 
 def test_noninteractive_first_setup_picks_agy_and_is_idempotent(env):

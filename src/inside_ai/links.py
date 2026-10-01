@@ -1,18 +1,21 @@
 """ia로 실행한 CLI와 번역 창을 잇는 연결 기록.
 
-ia는 링크를 만든 뒤 자기 프로세스를 CLI로 바꾼다(exec). 그래서 링크의 pid가 곧 CLI의 pid이고,
-번역 창은 그 pid가 살아 있는 동안만 동작한다.
+POSIX에서는 ia가 링크를 만든 뒤 자기 프로세스를 CLI로 바꾼다(exec). 그래서 링크의 pid가 곧 CLI의 pid다.
+Windows에는 exec가 없어 ia가 CLI를 실행하고 끝날 때까지 기다린다. 이때 링크의 pid는 기다리는 ia이고,
+ia는 CLI가 끝나야 끝난다. 번역 창은 그 pid가 살아 있는 동안만 동작한다(생존 확인은 oscompat.pid_alive).
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from . import oscompat
 from .state import state_dir
 
 
@@ -35,12 +38,12 @@ class Link:
     def save(self) -> None:
         path = links_dir() / f"{self.id}.json"
         tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(asdict(self), ensure_ascii=False))
+        tmp.write_text(json.dumps(asdict(self), ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, path)
 
     @property
     def alive(self) -> bool:
-        return pid_alive(self.pid)
+        return pid_alive(self.pid, self.started_at)
 
 
 def links_dir() -> Path:
@@ -50,11 +53,13 @@ def links_dir() -> Path:
 
 
 def load(link_id: str) -> Link | None:
-    try:
-        data = json.loads((links_dir() / f"{link_id}.json").read_text())
-    except (OSError, ValueError):
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", link_id or ""):
         return None
-    return Link(**data)
+    try:
+        data = json.loads((links_dir() / f"{link_id}.json").read_text(encoding="utf-8"))
+        return Link(**data)
+    except (OSError, ValueError, TypeError):
+        return None
 
 
 def all_links() -> list[Link]:
@@ -82,16 +87,5 @@ def prune(max_age: float = 7 * 86400) -> None:
             (links_dir() / f"{link.id}.json").unlink(missing_ok=True)
 
 
-def pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    # 좀비(종료했지만 회수 전)는 죽은 것으로 본다.
-    try:
-        with open(f"/proc/{pid}/stat") as f:
-            return f.read().rsplit(")", 1)[1].split()[0] != "Z"
-    except OSError:
-        return True
+def pid_alive(pid: int, started_at: float | None = None) -> bool:
+    return oscompat.pid_alive(pid, started_at)

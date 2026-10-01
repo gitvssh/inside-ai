@@ -2,13 +2,13 @@
 
 import json
 import os
-import signal
 import subprocess
 import sys
 import time
 
 import pytest
-from conftest import fake_cli
+from conftest import alive as _alive
+from conftest import fake_cli, force_kill_tree, search_path
 
 from inside_ai import own_sessions, translators
 from inside_ai.config import TranslationSettings
@@ -28,7 +28,7 @@ with open(os.path.join(log, f"{n:03d}.json"), "w") as f:
 mode = os.environ.get("FAKE_MODE", "ok")
 if mode == "hang":
     import subprocess
-    child = subprocess.Popen(["sleep", "60"])
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     open(os.path.join(log, "grandchild.pid"), "w").write(str(child.pid))
     time.sleep(60)
 if mode in ("stubborn-child", "orphan-child"):
@@ -94,7 +94,7 @@ def fakes(tmp_path, monkeypatch):
         fake_cli(bindir, name, body)
     log = tmp_path / "log"
     monkeypatch.setenv("FAKE_LOG", str(log))
-    monkeypatch.setenv("PATH", f"{bindir}:{os.environ['PATH']}")
+    monkeypatch.setenv("PATH", search_path(bindir, os.environ["PATH"]))
     translators._codex_features.clear()
 
     def calls():
@@ -214,18 +214,6 @@ def test_timeout_kills_cli_and_its_children(fakes, monkeypatch, tmp_path):
     assert translators._active == set()
 
 
-def _alive(pid):
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    try:
-        with open(f"/proc/{pid}/stat") as f:
-            return f.read().rsplit(")", 1)[1].split()[0] != "Z"
-    except OSError:
-        return False
-
-
 @pytest.mark.parametrize("mode", ["stubborn-child", "orphan-child"])
 def test_timeout_is_bounded_when_descendant_ignores_term(fakes, monkeypatch, tmp_path, mode):
     monkeypatch.setenv("FAKE_MODE", mode)
@@ -246,10 +234,7 @@ else:
     finally:
         # 회귀가 생겨도 테스트가 띄운 그룹만 정리해 다음 검증에 남기지 않는다.
         for call in fakes():
-            try:
-                os.killpg(call["pid"], signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            force_kill_tree(call["pid"])
 
 
 def test_terminate_all_stops_in_flight_translation(fakes, monkeypatch):
@@ -277,10 +262,10 @@ def _catch(errors, fn):
 def test_make_backend_selection(fakes, monkeypatch, tmp_path):
     assert translators.make_backend(TranslationSettings("none", None, 0, "config")) is None
     b = translators.make_backend(TranslationSettings("codex", "m1", 30, "config"), persona_for("codex"))
-    assert isinstance(b, CodexBackend) and b.id == "codex:m1:cli-v1:gpt-chan"
+    assert isinstance(b, CodexBackend) and b.id == f"codex:m1:cli-v1:gpt-chan:{persona_for('codex').fingerprint}"
     other = translators.make_backend(TranslationSettings("codex", None, 30, "config"), persona_for("codex"))
     assert other.id != b.id  # 모델이 바뀌면 캐시도 분리
-    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))  # 어떤 OS에서도 번역기가 보이지 않는다
     with pytest.raises(TranslatorUnavailable, match="ia setup"):
         translators.make_backend(TranslationSettings("agy", None, 30, "default"))
     with pytest.raises(TranslatorUnavailable, match="GEMINI_API_KEY"):

@@ -7,6 +7,7 @@ import sys
 import textwrap
 
 import pytest
+from conftest import WINDOWS, alive, fake_cli, force_kill_tree, posix_only, search_path, windows_only
 
 FAKE_CLAUDE = r'''#!/usr/bin/env python3
 import json, os, sys, time, datetime
@@ -51,13 +52,12 @@ def env(tmp_path):
     home.mkdir()
     bindir.mkdir()
     for name, body in (("claude", FAKE_CLAUDE), ("codex", FAKE_CODEX)):
-        f = bindir / name
-        f.write_text(body)
-        f.chmod(0o755)
+        fake_cli(bindir, name, body)
     e = dict(os.environ)
     e.update(
         HOME=str(home),
-        PATH=f"{bindir}:{e['PATH']}",
+        USERPROFILE=str(home),
+        PATH=search_path(bindir, e["PATH"]),
         IA_NO_PANE="1",
         INSIDE_AI_STATE_DIR=str(tmp_path / "state"),
         NO_COLOR="1",
@@ -71,12 +71,14 @@ def env(tmp_path):
 def launch(env, cwd, provider, thoughts, **extra):
     e = dict(env, FAKE_THOUGHTS="|".join(thoughts), **extra)
     cli = subprocess.Popen([sys.executable, "-m", "inside_ai", provider], cwd=cwd, env=e,
-                           stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                           stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                           encoding="utf-8", errors="replace")
     line = cli.stderr.readline()
     m = re.search(r"ia view (\w+)", line)
     assert m, line
     view = subprocess.Popen([sys.executable, "-m", "inside_ai", "view", m.group(1), "--close-wait", "0"],
-                            cwd=cwd, env=e, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, text=True)
+                            cwd=cwd, env=e, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, text=True,
+                            encoding="utf-8", errors="replace")
     return cli, view
 
 
@@ -110,15 +112,15 @@ def test_restarted_view_shows_same_session(env, tmp_path):
     cli, view = launch(env, tmp_path, "claude", ["only thought"])
     out1, _ = view.communicate(timeout=20)
     cli.wait(timeout=5)
-    link_id = re.search(r"(\w{12})", "".join(os.listdir(env["INSIDE_AI_STATE_DIR"] + "/links"))).group(1)
+    link_id = re.search(r"(\w{12})", "".join(os.listdir(os.path.join(env["INSIDE_AI_STATE_DIR"], "links")))).group(1)
     again = subprocess.run([sys.executable, "-m", "inside_ai", "view", link_id, "--close-wait", "0"],
-                           env=env, capture_output=True, text=True, timeout=10)
+                           env=env, capture_output=True, text=True, encoding="utf-8", timeout=10)
     assert "only thought" in out1 and again.stdout.count("only thought") == 1
 
 
 def test_passthrough_subcommand_opens_no_view(env, tmp_path):
     r = subprocess.run([sys.executable, "-m", "inside_ai", "claude", "--version"], env=env,
-                       capture_output=True, text=True, timeout=10)
+                       capture_output=True, text=True, encoding="utf-8", timeout=10)
     assert "ia view" not in r.stderr
 
 
@@ -153,8 +155,7 @@ def test_watch_translate_with_agy_does_not_retranslate_its_own_sessions(env, tmp
     import time as _time
     from datetime import datetime, timezone
 
-    (tmp_path / "bin" / "agy").write_text(FAKE_AGY_TRANSLATOR)
-    (tmp_path / "bin" / "agy").chmod(0o755)
+    fake_cli(tmp_path / "bin", "agy", FAKE_AGY_TRANSLATOR)
     e = dict(env)
     e.pop("IA_TRANSLATE")
     user = tmp_path / "home/.gemini/antigravity-cli/brain/USER/.system_generated/logs/transcript_full.jsonl"
@@ -162,7 +163,8 @@ def test_watch_translate_with_agy_does_not_retranslate_its_own_sessions(env, tmp
     now = datetime.now(timezone.utc).isoformat()
     user.write_text(_json.dumps({"step_index": 0, "type": "USER_INPUT", "created_at": now, "content": "hi"}) + "\n")
     watch = subprocess.Popen([sys.executable, "-m", "inside_ai", "watch", "-p", "agy", "--translate", "--duration", "9s",
-                              "--interval", "0.2"], env=e, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                              "--interval", "0.2"], env=e, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                             encoding="utf-8", errors="replace")
     for i, delay in ((1, 1.5), (2, 5.0)):  # 두 번째 생각은 재탐색(5초) 이후: 번역 세션이 보일 때
         _time.sleep(delay)
         with user.open("a") as f:
@@ -179,7 +181,7 @@ def test_view_falls_back_to_original_when_translator_missing(env, tmp_path):
 
     e = dict(env)
     e.pop("IA_TRANSLATE")  # 설정 없음 → 기본 번역기 agy. agy가 없으면 원문으로 표시하고 다른 번역기로 바꾸지 않는다
-    e["PATH"] = f"{tmp_path / 'bin'}:/usr/bin:/bin"
+    e["PATH"] = search_path(tmp_path / "bin", *([] if WINDOWS else ["/usr/bin", "/bin"]))
     if shutil.which("agy", path=e["PATH"]):
         pytest.skip("시스템 PATH에 agy가 있어 '없음' 경로를 만들 수 없음")
     cli, view = launch(e, tmp_path, "claude", ["plain thought"])
@@ -196,12 +198,12 @@ time.sleep(60)
 '''
 
 
+@posix_only
 def test_closing_the_pane_stops_an_in_flight_translator(env, tmp_path):
     import signal
     import time as _time
 
-    (tmp_path / "bin" / "agy").write_text(FAKE_AGY_HANG)
-    (tmp_path / "bin" / "agy").chmod(0o755)
+    fake_cli(tmp_path / "bin", "agy", FAKE_AGY_HANG)
     pid_file = tmp_path / "translator.pid"
     e = dict(env, FAKE_PID_FILE=str(pid_file), FAKE_DELAY="0.2")
     e.pop("IA_TRANSLATE")
@@ -225,13 +227,13 @@ def test_closing_the_pane_stops_an_in_flight_translator(env, tmp_path):
         pytest.fail("창을 닫은 뒤에도 번역 프로세스가 남아 있음")
 
 
+@posix_only
 def test_closing_watch_stops_its_translator(env, tmp_path):
     import json
     import signal
     import time
 
-    (tmp_path / "bin" / "agy").write_text(FAKE_AGY_HANG)
-    (tmp_path / "bin" / "agy").chmod(0o755)
+    fake_cli(tmp_path / "bin", "agy", FAKE_AGY_HANG)
     pid_file = tmp_path / "watch-translator.pid"
     e = dict(env, FAKE_PID_FILE=str(pid_file))
     e.pop("IA_TRANSLATE")
@@ -256,7 +258,32 @@ def test_closing_watch_stops_its_translator(env, tmp_path):
             watch.kill()
             watch.communicate()
         if pid_file.exists():
-            try:
-                os.killpg(int(pid_file.read_text()), signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            force_kill_tree(int(pid_file.read_text()))
+
+
+@windows_only
+def test_killed_view_takes_its_translator_down_via_job_object(env, tmp_path):
+    """Windows: 창(콘솔)이 닫히거나 ia view가 강제 종료돼도 Job Object가 번역 프로세스를 끝낸다(실기 전용)."""
+    import time as _time
+
+    fake_cli(tmp_path / "bin", "agy", FAKE_AGY_HANG)
+    pid_file = tmp_path / "translator.pid"
+    e = dict(env, FAKE_PID_FILE=str(pid_file), FAKE_DELAY="0.2")
+    e.pop("IA_TRANSLATE")
+    cli, view = launch(e, tmp_path, "claude", ["needs translation"])
+    try:
+        deadline = _time.time() + 20
+        while not pid_file.exists() and _time.time() < deadline:
+            _time.sleep(0.1)
+        assert pid_file.exists(), "번역기가 시작되지 않음"
+        pid = int(pid_file.read_text())
+        view.kill()  # TerminateProcess: 정리 코드가 돌 기회가 없다
+        view.communicate(timeout=10)
+        deadline = _time.time() + 5
+        while _time.time() < deadline and alive(pid):
+            _time.sleep(0.1)
+        assert not alive(pid), "창 프로세스가 죽은 뒤에도 번역 프로세스가 남아 있음"
+    finally:
+        cli.wait(timeout=10)
+        if pid_file.exists():
+            force_kill_tree(int(pid_file.read_text()))

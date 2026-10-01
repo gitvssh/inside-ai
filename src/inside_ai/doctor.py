@@ -19,11 +19,12 @@ import tomllib
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from . import __version__, config
+from . import __version__, config, oscompat
 from .personas import PLAIN
 
 PROBE_TEXT = "Checking that the translation cache key includes the model id before shipping."
-INSTALL_SOURCE = "git+https://github.com/gitvssh/inside-ai.git"
+INSTALL_SOURCE = "https://github.com/gitvssh/inside-ai/archive/refs/heads/main.zip"  # Git 없이 설치·업데이트
+GIT_SOURCE = "git+https://github.com/gitvssh/inside-ai.git"  # 예전 설치(그대로 업데이트 가능)
 OK, WARN, FAIL, INFO = "ok", "warn", "fail", "info"
 CLI_NAMES = {"claude": "Claude Code", "codex": "Codex CLI", "agy": "Antigravity CLI (agy)"}
 
@@ -39,9 +40,14 @@ class Check:
 
 def _run(argv: list[str], timeout: float = 10.0) -> subprocess.CompletedProcess | None:
     try:
-        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+        return subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              timeout=timeout, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.TimeoutExpired):
         return None
+
+
+def _which(name: str) -> str | None:
+    return oscompat.find_command(name).path
 
 
 def is_wsl() -> bool:
@@ -57,42 +63,66 @@ def check_platform() -> Check:
     system = platform.system()
     py = ".".join(map(str, sys.version_info[:3]))
     data = {"system": system, "wsl": is_wsl(), "python": py, "version": __version__}
+    data["validated"] = system == "Linux"
     if sys.version_info < (3, 11):
         return Check("platform", FAIL, f"Python {py}: 3.11 이상이 필요합니다", "uv tool install --python 3.12 ...", data)
+    if system in ("Windows", "Darwin"):
+        name = "Windows" if system == "Windows" else "macOS"
+        return Check("platform", WARN,
+                     f"{name} · Python {py} · inside-ai {__version__}: 지원 코드는 준비됐지만 {name} 실기 검증은 아직 없습니다"
+                     "(검증 환경: Linux·WSL2)", None, data)
     if system != "Linux":
         return Check("platform", WARN, f"{system}: 검증된 환경은 Linux와 WSL입니다(이 환경은 검증되지 않음)", None, data)
     where = "WSL" if data["wsl"] else "Linux"
     return Check("platform", OK, f"{where} · Python {py} · inside-ai {__version__}", None, data)
 
 
+def path_fix() -> str:
+    if oscompat.WINDOWS:
+        return ('이 PowerShell 창: $env:Path = "$(uv tool dir --bin);$env:Path" · 영구 반영: uv tool update-shell 후 '
+                "새 터미널")
+    return "uv tool update-shell 실행 후 새 터미널을 여세요(또는 `uv tool dir --bin` 폴더를 PATH에 추가)"
+
+
+def uv_fix() -> str:
+    if oscompat.WINDOWS:
+        return "winget install --id=astral-sh.uv -e (또는 https://docs.astral.sh/uv/getting-started/installation/)"
+    if oscompat.MACOS:
+        return "brew install uv (또는 https://docs.astral.sh/uv/getting-started/installation/)"
+    return "https://docs.astral.sh/uv/getting-started/installation/"
+
+
 def check_install() -> Check:
-    ia, uv = shutil.which("ia"), shutil.which("uv")
-    data = {"ia": ia, "inside_ai": shutil.which("inside-ai"), "uv": uv}
+    ia, uv = _which("ia"), _which("uv")
+    data = {"ia": ia, "inside_ai": _which("inside-ai"), "uv": uv, "source": INSTALL_SOURCE}
     if not ia:
-        return Check("install", WARN, "PATH에서 `ia`를 찾을 수 없습니다",
-                     "uv tool update-shell 실행 후 새 터미널을 여세요(또는 ~/.local/bin을 PATH에 추가)", data)
+        return Check("install", WARN, "PATH에서 `ia`를 찾을 수 없습니다", path_fix(), data)
     note = "" if uv else " · uv 없음(업데이트에 필요)"
-    return Check("install", OK if uv else WARN, f"ia: {ia}{note}", None if uv else "https://docs.astral.sh/uv/ 설치", data)
+    return Check("install", OK if uv else WARN, f"ia: {ia}{note}", None if uv else uv_fix(), data)
 
 
 def cli_status(name: str) -> dict:
     """설치 여부·버전·로그인 상태(로컬 확인). 로그인 상태: yes | no | unknown."""
-    path = shutil.which(name)
-    st: dict = {"installed": bool(path), "path": path, "version": None, "login": "unknown"}
-    if not path:
+    cmd = oscompat.find_command(name)
+    st: dict = {"installed": cmd.found, "path": cmd.path, "launch": cmd.kind, "version": None, "login": "unknown"}
+    if not cmd.found:
         return st
-    r = _run([path, "--version"], 10)
+    if not cmd.usable:
+        st["problem"] = cmd.problem
+        return st
+    path = list(cmd.argv)
+    r = _run([*path, "--version"], 10)
     if r and r.returncode == 0 and r.stdout.strip():
         st["version"] = r.stdout.strip().splitlines()[0][:80]
     if name == "claude":
-        r = _run([path, "auth", "status", "--json"], 15)
+        r = _run([*path, "auth", "status", "--json"], 15)
         if r is not None:
             try:
                 st["login"] = "yes" if json.loads(r.stdout).get("loggedIn") is True else "no"
             except (ValueError, AttributeError):
                 st["login"] = "no" if r.returncode != 0 else "unknown"
     elif name == "codex":
-        r = _run([path, "login", "status"], 15)
+        r = _run([*path, "login", "status"], 15)
         if r is not None:
             st["login"] = "yes" if r.returncode == 0 else "no"
     return st  # agy는 로컬에서 로그인 상태를 묻는 명령이 없다(--probe로 확인)
@@ -104,6 +134,9 @@ def check_clis(statuses: dict[str, dict]) -> list[Check]:
         if not st["installed"]:
             out.append(Check(f"cli.{name}", INFO, f"{CLI_NAMES[name]}: 설치 안 됨(필요할 때만 설치)", None, st))
             continue
+        if st.get("problem"):
+            out.append(Check(f"cli.{name}", WARN, f"{CLI_NAMES[name]}: 찾았지만 안전하게 실행할 수 없는 런처", st["problem"], st))
+            continue
         login = {"yes": "로그인 확인됨", "no": "로그인 안 됨", "unknown": "로그인 미확인(--probe로 확인)"}[st["login"]]
         status = WARN if st["login"] == "no" else OK
         fix = f"터미널에서 `{name}`를 실행해 로그인하세요" if st["login"] == "no" else None
@@ -113,17 +146,26 @@ def check_clis(statuses: dict[str, dict]) -> list[Check]:
     return out
 
 
+MANUAL_PANE = "다른 터미널 창에서 `ia view`(또는 `ia <cli>`가 알려 준 `ia view <연결 ID>`)를 실행하면 됩니다"
+
+
 def check_pane() -> Check:
     from .wrap import wt_usable
 
+    if oscompat.WINDOWS:
+        if wt_usable():
+            return Check("pane", OK, "Windows Terminal: 현재 창을 나눠 생각 창을 엽니다(Windows 실기 미검증)", None, {"mode": "wt"})
+        return Check("pane", WARN, "Windows Terminal 밖이라 생각 창을 자동으로 못 엽니다", "Windows Terminal에서 실행하거나 "
+                     + MANUAL_PANE.replace("터미널 창", "PowerShell 창"), {"mode": "manual"})
     if os.environ.get("TMUX") and shutil.which("tmux"):
         return Check("pane", OK, "tmux 안: 현재 창을 나눠 생각 창을 엽니다", None, {"mode": "tmux"})
     if wt_usable():
         return Check("pane", OK, "Windows Terminal(WSL): 창을 나눠 생각 창을 엽니다", None, {"mode": "wt"})
     if shutil.which("tmux"):
         return Check("pane", OK, "tmux: ia 전용 tmux 화면을 만들어 생각 창을 엽니다", None, {"mode": "tmux-host"})
-    return Check("pane", WARN, "tmux가 없어 생각 창을 자동으로 못 엽니다(다른 터미널에서 `ia view`)",
-                 "sudo apt install tmux", {"mode": "manual"})
+    install = "brew install tmux" if oscompat.MACOS else "sudo apt install tmux(또는 배포판 패키지)"
+    return Check("pane", WARN, "tmux가 없어 생각 창을 자동으로 못 엽니다",
+                 f"{MANUAL_PANE}. 자동 분할을 원하면 {install}", {"mode": "manual"})
 
 
 def check_translation(statuses: dict[str, dict]) -> tuple[Check, config.TranslationSettings | None]:
@@ -152,6 +194,8 @@ def check_translation(statuses: dict[str, dict]) -> tuple[Check, config.Translat
         src = "GEMINI_API_KEY" if has_env else "[gemini] key_command(실행은 --probe 때만)"
         return Check("translation", OK, head + f" · 키: {src}", None, data), settings
     st = statuses.get(p) or cli_status(p)
+    if st.get("problem"):
+        return Check("translation", FAIL, head + f" · `{p}` 런처를 안전하게 실행할 수 없음(원문으로 표시됨)", st["problem"], data), settings
     if not st["installed"]:
         hint = "`ia setup`으로 설치된 번역기를 고르세요"
         if settings.source == "default":
@@ -165,7 +209,7 @@ def check_translation(statuses: dict[str, dict]) -> tuple[Check, config.Translat
 def _claude_summaries() -> bool | None:
     path = Path.home() / ".claude" / "settings.json"
     try:
-        value = json.loads(path.read_text()).get("showThinkingSummaries")
+        value = json.loads(path.read_text(encoding="utf-8")).get("showThinkingSummaries")
     except (OSError, ValueError, AttributeError):
         return None
     return value is True
@@ -227,6 +271,43 @@ def check_state() -> Check:
     return Check("state", OK, f"상태 폴더: {d}", None, {"path": str(d)})
 
 
+def check_persona() -> Check:
+    """말투 선택·사용자 말투 파일 검사(모델 호출 없음). 사용자 말투 본문은 출력하지 않는다."""
+    from . import personas
+
+    try:
+        data = config.load()
+    except ValueError:
+        return Check("persona", INFO, "말투: 설정 파일 오류로 확인하지 못함(번역 항목 참고)")
+    effective, problems = {}, []
+    for agent in personas.AGENTS:
+        try:
+            sel = personas.select(agent, data)
+            effective[agent] = {"id": sel.persona.key, "source": sel.source}
+        except personas.PersonaError as e:
+            problems.append(str(e))
+            effective[agent] = {"error": str(e), "fallback": personas.PERSONAS[agent].key}
+    try:
+        configured = personas.persona_settings(data).configured
+    except personas.PersonaError:
+        configured = True
+    profiles = personas.user_profiles()
+    invalid = [{"id": pid, "error": err} for pid, _p, err in profiles if err]
+    info = {"configured": configured, "effective": effective, "dir": str(personas.personas_dir()),
+            "profiles": [pid for pid, p, _e in profiles if p is not None], "invalid_profiles": invalid}
+    summary = "말투: " + ", ".join(f"{a}→{e.get('id', '✗')}" for a, e in effective.items())
+    if not configured:
+        summary += " (기본값 auto)"
+    if problems:
+        return Check("persona", FAIL, summary + " · 설정한 말투를 쓸 수 없음",
+                     f"{problems[0]} → `ia persona list`로 확인하고 `ia setup --persona <id>`로 고치세요"
+                     "(그동안 창은 auto 말투로 번역)", info)
+    if invalid:
+        return Check("persona", WARN, summary + f" · 읽지 못한 사용자 말투 파일 {len(invalid)}개",
+                     "`ia persona list`로 이유를 확인하세요", info)
+    return Check("persona", OK, summary, None, info)
+
+
 def probe(settings: config.TranslationSettings) -> Check:
     """짧은 합성 문장 하나를 캐시 없이 실제 번역한다."""
     from . import translators
@@ -251,6 +332,7 @@ def run_checks(do_probe: bool = False, translator: str | None = None, model: str
     checks = [check_platform(), check_install(), *check_clis(statuses), check_pane()]
     tr, settings = check_translation(statuses)
     checks.append(tr)
+    checks.append(check_persona())
     checks += check_logs(statuses)
     checks.append(check_state())
     if do_probe:
@@ -275,8 +357,9 @@ def main(args) -> int:
         return 2
     failed = any(c.status == FAIL for c in checks)
     if args.json:
+        # ASCII JSON: Windows 코드 페이지·파이프에서도 깨지지 않는다
         print(json.dumps({"ok": not failed, "version": __version__, "checks": [asdict(c) for c in checks]},
-                         ensure_ascii=False, indent=2))
+                         ensure_ascii=True, indent=2))
         return 1 if failed else 0
     for c in checks:
         print(f"{MARK[c.status]} {c.summary}")

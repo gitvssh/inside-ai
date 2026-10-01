@@ -1,7 +1,11 @@
 """ia <cli> [인자...]: CLI를 그대로 실행하고 옆 창에 그 세션 전용 생각 창을 연다.
 
-ia는 연결 기록(Link)을 남기고 옆 창을 띄운 뒤, 자기 프로세스를 CLI로 교체한다(os.execvp).
+ia는 연결 기록(Link)을 남기고 옆 창을 띄운 뒤, 자기 프로세스를 CLI로 교체한다(POSIX os.execv).
 그래서 키 입력·승인·종료 코드는 CLI가 직접 처리하고 ia는 중간에 끼지 않는다.
+
+Windows에는 exec가 없다. ia가 같은 콘솔에서 CLI를 실행하고(표준 입출력을 그대로 물려줌) 끝날 때까지
+기다려 CLI의 종료 코드를 그대로 돌려준다. Ctrl+C는 CLI가 처리하고 기다리는 ia는 무시한다.
+npm의 .cmd 런처는 cmd.exe를 거치지 않도록 검증한 패키지 엔트리를 node로 직접 실행한다(oscompat.find_command).
 """
 
 from __future__ import annotations
@@ -16,7 +20,7 @@ from dataclasses import dataclass
 
 from pathlib import Path
 
-from . import links
+from . import links, oscompat
 from .state import state_dir
 
 PROVIDERS = ("claude", "codex", "agy")
@@ -123,15 +127,32 @@ def view_command(link_id: str) -> list[str]:
 
 
 def wt_usable() -> bool:
-    """Windows Terminal 안이고, WSL에서 Windows 프로그램(wt.exe)을 실행할 수 있는지."""
+    """Windows Terminal 안이고 wt.exe로 창을 나눌 수 있는지(Windows 자체 또는 WSL Windows 연동)."""
+    if not os.environ.get("WT_SESSION"):
+        return False
+    if oscompat.WINDOWS:
+        return oscompat.windows_which("wt.exe") is not None
     interop = any(Path("/proc/sys/fs/binfmt_misc").glob("WSLInterop*"))
-    return bool(os.environ.get("WT_SESSION") and os.environ.get("WSL_DISTRO_NAME") and shutil.which("wt.exe") and interop)
+    return bool(os.environ.get("WSL_DISTRO_NAME") and shutil.which("wt.exe") and interop)
+
+
+def wt_escape(arg: str) -> str:
+    """wt.exe는 인자 안의 ;도 명령 구분자로 본다. 글자 그대로 넘기려면 \\;로 적는다."""
+    return arg.replace(";", "\\;")
+
+
+def wt_split_command(wt: str, cwd: str, cmd: list[str]) -> list[str]:
+    """Windows Terminal(Windows 자체) 현재 창을 나눠 cmd를 실행하는 wt.exe 인자. 셸 문자열로 합치지 않는다."""
+    size = str(int(PANE_SIZE.rstrip("%")) / 100)
+    return [wt, "-w", "0", "split-pane", "-V", "--size", size, "-d", wt_escape(cwd),
+            *(wt_escape(a) for a in cmd), ";", "move-focus", "left"]
 
 
 def should_host_tmux() -> bool:
     """tmux 밖이고 Windows Terminal 분할도 못 쓰면, ia가 tmux 화면을 직접 만든다."""
     return (
-        not os.environ.get("TMUX")
+        not oscompat.WINDOWS
+        and not os.environ.get("TMUX")
         and os.environ.get("IA_TMUX", "1") != "0"
         and os.environ.get("IA_NO_PANE") != "1"
         and not wt_usable()
@@ -162,6 +183,16 @@ def open_pane(link_id: str, cwd: str) -> str:
         )
         if r.returncode == 0:
             return "tmux"
+    if oscompat.WINDOWS:
+        wt = oscompat.windows_which("wt.exe")
+        if wt and wt_usable():
+            try:
+                subprocess.Popen(wt_split_command(wt, cwd, cmd), stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return "wt"
+            except OSError:
+                pass
+        return "manual"
     wt = shutil.which("wt.exe")
     distro = os.environ.get("WSL_DISTRO_NAME")
     if wt and distro and wt_usable():
@@ -182,10 +213,13 @@ def open_pane(link_id: str, cwd: str) -> str:
 
 
 def main(provider: str, args: list[str]) -> int:
-    binary = shutil.which(provider)
-    if binary is None:
+    command = oscompat.find_command(provider)
+    if not command.found:
         print(f"ia: '{provider}' 명령을 찾을 수 없습니다.", file=sys.stderr)
         return 127
+    if not command.usable:
+        print(f"ia: {command.problem}", file=sys.stderr)
+        return 126
     p = plan(provider, args)
     final_args = p.args if p.args is not None else args
     if p.view and os.environ.get("IA_OFF") != "1" and should_host_tmux():
@@ -200,8 +234,15 @@ def main(provider: str, args: list[str]) -> int:
         link.save()
         how = open_pane(link.id, link.cwd)
         if how == "manual":
-            print(f"ia: 옆 창에서 `ia view`를 실행하면 이 세션의 생각이 보입니다 (연결 ID: ia view {link.id})", file=sys.stderr)
+            print(f"ia: 생각 창을 자동으로 열지 못했습니다. 다른 터미널 창에서 `ia view {link.id}`를 실행하세요"
+                  "(가장 최근 세션이면 `ia view`).", file=sys.stderr)
     sys.stdout.flush()
     sys.stderr.flush()
-    os.execv(binary, [provider, *final_args])
+    if oscompat.WINDOWS:
+        try:
+            return oscompat.run_foreground([*command.argv, *final_args])
+        except OSError as e:
+            print(f"ia: '{provider}' 실행 실패: {e}", file=sys.stderr)
+            return 126
+    os.execv(command.path, [provider, *final_args])
     return 0  # 도달하지 않음

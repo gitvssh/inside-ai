@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.0 — 2026-10-01
+
+- Translation tones: built-in `auto` (character per observed CLI, unchanged default), `plain`, `polite`,
+  and the three characters by ID; custom tones as shareable data files (`personas/<id>.toml`)
+- `ia persona list|show|create|preview` — preview translates a fixed synthetic sentence with the real
+  translator and tone; `ia setup --persona <id> [--for-agent <cli>]` changes only the tone
+- The installation runbook asks for the tone once on a first install; updates keep existing choices
+- Translation cache keys include a hash of the final tone instruction; recent-translation context is
+  kept per translator and tone
+- Install from the public source archive without Git; update with `uv tool upgrade --reinstall inside-ai`
+  (existing Git installs keep working)
+- Windows PowerShell and macOS: OS-specific install steps; Windows process liveness through read-only
+  Win32 handles (never `os.kill(pid, 0)`), translator cleanup through a Job Object, npm `.cmd` CLIs run
+  through their verified Node entry (never `cmd.exe`), native Windows Terminal pane, wrapper that waits
+  and returns the CLI's exit code; second-terminal `ia view <id>` fallback everywhere
+- Windows file URIs/paths, UTF-8 config/state files, output that never crashes on non-UTF-8 consoles,
+  ASCII `--json` output
+- Native Windows and macOS are prepared and contract-tested but not yet validated on real machines
+
 ## 0.2.0 — 2026-10-01
 
 - Agent-readable installation runbook (`docs/install.md`); install and update from the public Git

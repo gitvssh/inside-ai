@@ -4,17 +4,16 @@ from __future__ import annotations
 
 import os
 import queue
-import select
 import sys
 import threading
 import time
 from collections import deque
 from typing import TextIO
 
-from . import links
+from . import links, oscompat
 from .collector import Collector, Event
 from .resolve import resolve, resolve_path
-from .personas import PLAIN, Persona, display_name, persona_for
+from .personas import PLAIN, Persona, display_name, persona_or_fallback
 from .sources import ALL_SOURCES
 from .translate import TranslationService
 
@@ -29,7 +28,7 @@ REDACTED_HINT = {
 class Screen:
     def __init__(self, out: TextIO):
         self.out = out
-        self.color = out.isatty() and os.environ.get("NO_COLOR") is None
+        self.color = os.environ.get("NO_COLOR") is None and oscompat.enable_ansi(out)
         self.lock = threading.Lock()
 
     def _c(self, code: str, text: str) -> str:
@@ -69,10 +68,16 @@ class Renderer:
         self.screen = screen
         self.service = service
         self.q: queue.Queue[Event | None] = queue.Queue()
-        self.recent: deque[tuple[str, str]] = deque(maxlen=RECENT_CONTEXT)
+        # 직전 번역 문맥은 번역기·말투(backend.id)별로 따로 둔다. 다른 말투의 문장이 섞이지 않게 한다.
+        self._recent: dict[str, deque[tuple[str, str]]] = {}
         self.last_failure: str | None = None
         self.thread = threading.Thread(target=self._work, daemon=True)
         self.thread.start()
+
+    @property
+    def recent(self) -> deque[tuple[str, str]]:
+        key = getattr(self.service.backend, "id", "")
+        return self._recent.setdefault(key, deque(maxlen=RECENT_CONTEXT))
 
     def push(self, events: list[Event]) -> None:
         for ev in events:
@@ -83,9 +88,10 @@ class Renderer:
             ev = self.q.get()
             if ev is None:
                 return
-            translated = self.service.translate(ev.thought.text, list(self.recent)) if self.service.enabled else None
+            recent = self.recent
+            translated = self.service.translate(ev.thought.text, list(recent)) if self.service.enabled else None
             if translated:
-                self.recent.append((ev.thought.text[:1500], translated[:1500]))
+                recent.append((ev.thought.text[:1500], translated[:1500]))
             failed = self.service.last_error if self.service.enabled and translated is None else None
             if failed and failed != self.last_failure:  # 같은 이유는 한 번만 알린다
                 self.screen.status(f"번역 실패: {failed}")
@@ -128,11 +134,14 @@ def _run(
         screen.status("연결할 ia 세션이 없습니다. 먼저 `ia claude`처럼 CLI를 실행하세요.")
         return 1
     source = source or ALL_SOURCES[link.provider]()
-    persona = persona_for(link.provider)
-    folder = os.path.basename(link.cwd.rstrip("/")) or link.cwd
+    # 말투는 창을 열 때 한 번 정한다(바꾼 설정은 다음 창부터). 잘못된 설정은 원래 CLI를 막지 않고 이유만 알린다.
+    persona, persona_problem = persona_or_fallback(link.provider)
+    folder = oscompat.basename(link.cwd)
     title = f"<{display_name(link.provider)}>의 생각은?"
     screen.title(title, persona.color)
     screen.status(folder)
+    if persona_problem and translate:
+        screen.status(persona_problem)
     if service is None:
         service = make_service(screen, translate, persona)
 
@@ -153,7 +162,8 @@ def _run(
     screen.clear()
     screen.title(title, persona.color)
     label = getattr(service.backend, "label", None)
-    mode = (f" · 한국어 번역({label})" if label else " · 한국어 번역") if service.enabled else " · 원문"
+    tone = getattr(getattr(service.backend, "persona", None), "key", None)
+    mode = (f" · 한국어 번역({label}{', 말투 ' + tone if tone else ''})" if label else " · 한국어 번역") if service.enabled else " · 원문"
     screen.status(f"{folder} · 연결됨 · 세션 {session.session_id[:8]}{mode}")
     screen.status("새 생각이 생기면 여기에 표시됩니다.\n")
     renderer = Renderer(screen, service)
@@ -210,7 +220,7 @@ def _finish(screen: Screen, close_wait: float) -> int:
         return 0
     screen.status(f"Enter를 누르면 창이 닫힙니다 ({int(close_wait // 60)}분 뒤 자동으로 닫힘).")
     try:
-        select.select([sys.stdin], [], [], close_wait)
+        oscompat.wait_for_enter(close_wait)
     except (KeyboardInterrupt, OSError):
         pass
     return 0

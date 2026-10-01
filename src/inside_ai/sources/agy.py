@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from urllib.parse import unquote, urlparse
 
-from .. import own_sessions
+from .. import oscompat, own_sessions
 from ..model import Session, Thought, parse_time
 from ..tail import Chunk, file_mtime
 from .base import load_json, read_first_lines
@@ -59,7 +58,7 @@ class AgySource:
         mapping: dict[str, str] = {}
         if mtime:
             try:
-                con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1)
+                con = sqlite3.connect(f"{db.resolve().as_uri()}?mode=ro", uri=True, timeout=1)
                 try:
                     for cid, uris in con.execute(
                         "select conversation_id, workspace_uris from conversation_summaries"
@@ -112,10 +111,11 @@ class AgySource:
         ]
 
 
-def _first_file_uri(uris: object) -> str | None:
+def _first_file_uri(uris: object, windows: bool | None = None) -> str | None:
+    """workspace_uris(JSON 배열 문자열)의 첫 file:// 경로. Windows 드라이브·UNC·%인코딩은 oscompat이 처리한다."""
     if not isinstance(uris, str):
         return None
     for token in uris.replace(",", " ").replace('"', " ").replace("[", " ").replace("]", " ").split():
-        if token.startswith("file://"):
-            return unquote(urlparse(token).path) or None
+        if token.lower().startswith("file://"):
+            return oscompat.file_uri_to_path(token, windows)
     return None

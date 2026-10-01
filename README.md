@@ -14,9 +14,14 @@ Paste this into Claude Code, Codex, or agy:
 > Install Inside AI from https://github.com/gitvssh/inside-ai by following docs/install.md, then run
 > `ia doctor` and tell me the result.
 
-[docs/install.md](docs/install.md) is an agent-readable runbook: environment checks, installation from
-the public Git repository with uv, translator selection, verification, update, and removal. It tells the
-agent not to edit your projects, `CLAUDE.md`/`AGENTS.md`, skills, or CLI settings.
+[docs/install.md](docs/install.md) is an agent-readable runbook with separate steps for
+[Linux / WSL2](docs/install.md#linux-and-wsl2), [Windows PowerShell](docs/install.md#windows-powershell),
+and [macOS](docs/install.md#macos): environment checks, installation with uv from the public source
+archive (Git is not required), translator and tone selection, verification, update, and removal. It
+tells the agent not to edit your projects, `CLAUDE.md`/`AGENTS.md`, skills, or CLI settings.
+
+Linux and WSL2 are validated. Native Windows and macOS support is prepared and covered by contract tests
+but has not yet been validated on real machines.
 
 ```text
 ┌──────────────────────────────┬─────────────────────────────┐
@@ -39,8 +44,9 @@ persists, so it works across three agents and survives CLI upgrades as long as t
 ## Features
 
 - **`ia <cli>` wrapper** — `ia claude`, `ia codex`, `ia agy` start the CLI exactly as before (the wrapper
-  `exec`s into it, so input, approvals, and exit codes are untouched) and open a thought pane bound to
-  *that* session. Works inside tmux, in Windows Terminal (WSL), or by creating a dedicated tmux layout.
+  `exec`s into it on Linux/macOS; on Windows it runs the CLI in the same console and returns its exit
+  code) and open a thought pane bound to *that* session. Works inside tmux, in Windows Terminal (native
+  or WSL), by creating a dedicated tmux layout, or with `ia view <id>` in a second terminal.
 - **Exact session linking** — Claude Code gets a pre-assigned `--session-id`; Codex and agy sessions are
   matched by start time and folder, with claims so parallel windows never mix.
 - **Incremental, low-overhead collector** — tails JSONL logs with partial-line holding, rewrite and
@@ -52,21 +58,27 @@ persists, so it works across three agents and survives CLI upgrades as long as t
   so a thought is translated once even when several panes see it or after a restart.
 - **`ia setup` / `ia doctor`** — pick the translator without hand-editing config (other settings are
   kept), and check the installation offline; `ia doctor --probe` runs one synthetic translation.
-- **Character voices** — each CLI gets its own persona (calm and warm for Claude, quiet and precise for
-  Codex, confident for Gemini). Tone rules keep code, paths, and numbers verbatim, avoid fixed catchphrases,
-  and pass the last few translations as context so endings don't repeat.
+- **Selectable tones** — by default each CLI gets its own character (calm and warm for Claude, quiet and
+  precise for Codex, confident for Gemini). Choose `plain` or `polite` instead, per CLI if you like, or
+  describe your own tone in a small shareable file (`ia persona create`). Fixed rules keep meaning, code,
+  paths, and numbers verbatim; `ia persona preview` translates a synthetic sample with your real
+  translator so you can hear the tone first.
 
 ## Manual install
 
-Requirements: Linux or WSL2 (validated), [uv](https://docs.astral.sh/uv/), `tmux` (recommended), and
-at least one of `claude`, `codex`, `agy`. Inside AI is installed from Git; it is not published on PyPI.
+Requirements: [uv](https://docs.astral.sh/uv/) and at least one of `claude`, `codex`, `agy`; `tmux`
+(Linux/macOS) or Windows Terminal (Windows) for the automatic side pane. Git is not needed. Inside AI is
+not published on PyPI.
 
 ```bash
-uv tool install git+https://github.com/gitvssh/inside-ai.git
-ia setup                         # choose the translator (agy is the default)
+uv tool install https://github.com/gitvssh/inside-ai/archive/refs/heads/main.zip
+ia setup                         # choose the translator (agy is the default) and the tone
 ia doctor                        # offline check; add --probe for one synthetic translation
 ia claude                        # or: ia codex, ia agy
 ```
+
+The same commands work in PowerShell; see [Windows PowerShell](docs/install.md#windows-powershell) for
+PATH setup in the current window.
 
 | Translator | `ia setup --translator …` | Reasoning is sent to |
 |---|---|---|
@@ -79,9 +91,20 @@ ia claude                        # or: ia codex, ia agy
 Omitting `--model` uses the CLI's default model (Codex's built-in default, without user config).
 Translation consumes the chosen account's quota in a separate process.
 
-Update with `uv tool upgrade inside-ai`; remove with `uv tool uninstall inside-ai`. Your config in
-`~/.config/inside-ai/config.toml` is kept. Details, configuration reference, isolation limits, and
-troubleshooting are in [docs/install.md](docs/install.md).
+Update with `uv tool upgrade --reinstall inside-ai` (installs made with `git+https://…` before 0.3 can
+keep using `uv tool upgrade inside-ai`); remove with `uv tool uninstall inside-ai`. Your config in
+`~/.config/inside-ai/config.toml` and your tones are kept. Details, configuration reference, isolation
+limits, and troubleshooting are in [docs/install.md](docs/install.md).
+
+Tones:
+
+```bash
+ia persona list                      # built-in and custom tones, and which one each CLI uses
+ia setup --persona polite            # calm 해요체 for every CLI (translator and model unchanged)
+ia setup --persona plain --for-agent codex
+ia persona create my-tone --name "내 말투" --style "차분하고 짧게, 해요체로."
+ia persona preview --persona my-tone # one synthetic sentence through your translator (uses quota)
+```
 
 Other commands:
 
@@ -90,7 +113,7 @@ inside-ai sessions                   # recent sessions and how many thoughts eac
 inside-ai watch --translate          # all sessions in one stream
 ia view                              # attach to the latest ia session from another terminal
 IA_TRANSLATE=0 ia claude             # show original text only
-IA_PERSONA=0 ia claude               # plain translation without character voice
+IA_PERSONA=0 ia claude               # plain translation without character voice (or IA_PERSONA=<id>)
 ```
 
 ## Architecture
@@ -116,7 +139,8 @@ agy        ──┘                     └─ Collector (dedupe, revisions, st
 | `translate.py`, `cache.py` | Translation pipeline and shared cache |
 | `translators.py`, `gemini.py`, `own_sessions.py` | CLI/API translators, isolation, ignoring translator-created sessions |
 | `config.py`, `setup_cmd.py`, `doctor.py` | Settings, `ia setup`, `ia doctor` |
-| `personas.py` | Character voice prompts and tone rules |
+| `personas.py`, `persona_cmd.py` | Built-in and custom tones, selection, `ia persona` |
+| `oscompat.py` | OS differences: process liveness and cleanup, Windows launchers, paths, terminal |
 
 Log formats and measurements are documented in [docs/log-formats.md](docs/log-formats.md). A Korean
 guide is in [docs/README.ko.md](docs/README.ko.md).
@@ -134,7 +158,8 @@ guide is in [docs/README.ko.md](docs/README.ko.md).
   the isolation limits in [docs/install.md](docs/install.md#how-the-cli-translators-are-isolated).
 - Claude Code stores reasoning only when `"showThinkingSummaries": true` is set; Codex needs
   `model_reasoning_summary`. Inside AI does not change these settings for you.
-- Translations are cached locally in `~/.local/state/inside-ai/`.
+- Translations are cached locally in `~/.local/state/inside-ai/`. Custom tones are plain data files and
+  are never executed.
 
 ## Development
 

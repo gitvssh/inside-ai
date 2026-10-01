@@ -8,10 +8,9 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
-from . import own_sessions
+from . import oscompat, own_sessions
 from .collector import is_own_translation
 from .links import Link, claimed_paths
 from .model import Session
@@ -23,7 +22,7 @@ _SLACK = 2.0  # 파일 시각과 ia 시작 시각 사이 허용 오차(초)
 def _same_dir(a: str | None, b: str | None) -> bool:
     if not a or not b:
         return True  # agy 등 작업 폴더가 기록되지 않는 경우는 폴더로 거르지 않는다
-    return os.path.realpath(a) == os.path.realpath(b)
+    return oscompat.same_path(a, b)  # 심볼릭 링크·Windows 대소문자·구분자 차이
 
 
 def _matches_hint(provider: str, path: Path, hint: str) -> bool:
