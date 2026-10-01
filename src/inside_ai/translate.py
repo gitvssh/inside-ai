@@ -1,4 +1,4 @@
-"""번역 계층. 실제 번역기(agy CLI / Gemini API)는 3단계에서 Backend로 붙인다."""
+"""번역 계층: 캐시·중복 방지·실패 시 원문. 실제 번역기는 translators.make_backend가 고른다."""
 
 from __future__ import annotations
 
@@ -20,7 +20,9 @@ class Backend(Protocol):
 class TranslationService:
     def __init__(self, backend: Backend | None, cache: TranslationCache | None = None, wait_timeout: float = 30.0):
         self.backend = backend
-        self.cache = cache if cache is not None or backend is None else TranslationCache()
+        # 다른 창이 번역을 맡았다가 죽은 경우에만 이어받도록, 번역 한 건의 최대 시간보다 길게 기다린다.
+        stale_after = max(90.0, wait_timeout + 15)
+        self.cache = cache if cache is not None or backend is None else TranslationCache(stale_after=stale_after)
         self.wait_timeout = wait_timeout
         self.owner = f"{os.getpid()}-{uuid.uuid4().hex[:6]}"
         self.calls = 0

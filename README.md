@@ -3,8 +3,20 @@
 Inside AI shows what your coding agent is thinking — in Korean, next to the CLI you already use.
 
 It follows the session logs that **Claude Code**, **Codex CLI**, and **Antigravity CLI (`agy`)** already
-write on your machine, picks out the reasoning blocks, translates them with Gemini, and prints them in a
-side pane. The agent CLIs are not modified, patched, or proxied.
+write on your machine, picks out the reasoning blocks, translates them with the translator you choose
+(agy by default; Claude Code, Codex, the Gemini API, or no translation), and prints them in a side pane.
+The agent CLIs are not modified, patched, or proxied, and nothing is injected into your coding sessions.
+
+## Install with your agent
+
+Paste this into Claude Code, Codex, or agy:
+
+> Install Inside AI from https://github.com/gitvssh/inside-ai by following docs/install.md, then run
+> `ia doctor` and tell me the result.
+
+[docs/install.md](docs/install.md) is an agent-readable runbook: environment checks, installation from
+the public Git repository with uv, translator selection, verification, update, and removal. It tells the
+agent not to edit your projects, `CLAUDE.md`/`AGENTS.md`, skills, or CLI settings.
 
 ```text
 ┌──────────────────────────────┬─────────────────────────────┐
@@ -33,34 +45,43 @@ persists, so it works across three agents and survives CLI upgrades as long as t
   matched by start time and folder, with claims so parallel windows never mix.
 - **Incremental, low-overhead collector** — tails JSONL logs with partial-line holding, rewrite and
   rotation detection, bounded reads, and stat-based skipping (≈0.1 KB read per idle poll across 140+ sessions).
-- **Gemini translation with a shared cache** — ordered background translation, one retry on transient
-  errors, fallback to the original text on failure. A SQLite cache ensures a thought is translated once
-  even when several panes see it at the same time or after a restart.
+- **Selectable translator with a shared cache** — agy (default), Claude Code, or Codex through your
+  existing CLI login, the Gemini API, or original text. CLI translators run isolated (stdin input, empty
+  temp directory, tools/MCP/hooks off where the CLI allows, timeouts with process cleanup). Ordered
+  background translation, fallback to the original text with the reason on failure, and a SQLite cache
+  so a thought is translated once even when several panes see it or after a restart.
+- **`ia setup` / `ia doctor`** — pick the translator without hand-editing config (other settings are
+  kept), and check the installation offline; `ia doctor --probe` runs one synthetic translation.
 - **Character voices** — each CLI gets its own persona (calm and warm for Claude, quiet and precise for
   Codex, confident for Gemini). Tone rules keep code, paths, and numbers verbatim, avoid fixed catchphrases,
   and pass the last few translations as context so endings don't repeat.
 
-## Quick start
+## Manual install
 
-Requirements: Linux or WSL, Python 3.11+, [uv](https://docs.astral.sh/uv/), `tmux` (recommended), and a
-Gemini API key.
+Requirements: Linux or WSL2 (validated), [uv](https://docs.astral.sh/uv/), `tmux` (recommended), and
+at least one of `claude`, `codex`, `agy`. Inside AI is installed from Git; it is not published on PyPI.
 
 ```bash
-git clone https://github.com/gitvssh/inside-ai && cd inside-ai
-uv tool install --editable .
-
-export GEMINI_API_KEY=...        # or configure key_command below
+uv tool install git+https://github.com/gitvssh/inside-ai.git
+ia setup                         # choose the translator (agy is the default)
+ia doctor                        # offline check; add --probe for one synthetic translation
 ia claude                        # or: ia codex, ia agy
 ```
 
-Store the key in a secret manager instead of your shell by adding `~/.config/inside-ai/config.toml`:
+| Translator | `ia setup --translator …` | Reasoning is sent to |
+|---|---|---|
+| agy (default) | `agy [--model gemini-3.8-flash-low]` | Google, via your agy login |
+| Claude Code | `claude --model haiku` | Anthropic, via your Claude Code login |
+| Codex | `codex [--model <id>]` | OpenAI, via your Codex login |
+| Gemini API | `gemini-api` (key from `GEMINI_API_KEY` or `[gemini] key_command`) | Google Gemini API |
+| none | `none` | nowhere (original text) |
 
-```toml
-[gemini]
-key_command = "pass show gemini/api-key"   # any command that prints the key; run without a shell
-key_hint = "Unlock your password store and retry."
-model = "gemini-3.8-flash"
-```
+Omitting `--model` uses the CLI's default model (Codex's built-in default, without user config).
+Translation consumes the chosen account's quota in a separate process.
+
+Update with `uv tool upgrade inside-ai`; remove with `uv tool uninstall inside-ai`. Your config in
+`~/.config/inside-ai/config.toml` is kept. Details, configuration reference, isolation limits, and
+troubleshooting are in [docs/install.md](docs/install.md).
 
 Other commands:
 
@@ -83,7 +104,7 @@ agy        ──┘                     └─ Collector (dedupe, revisions, st
                                             ▼
                          TranslationService ── SQLite cache (claim / wait / reuse)
                                             │
-                                   GeminiBackend + Persona prompt
+                agy / claude / codex CLI (isolated, stdin) or Gemini API + Persona prompt
 ```
 
 | Module | Responsibility |
@@ -92,7 +113,9 @@ agy        ──┘                     └─ Collector (dedupe, revisions, st
 | `sources/` | Per-CLI log discovery and reasoning extraction |
 | `collector.py` | Multi-session polling, dedupe by block id and content digest |
 | `wrap.py`, `resolve.py`, `links.py` | `ia` wrapper, pane opening, session linking |
-| `translate.py`, `cache.py`, `gemini.py` | Translation pipeline and shared cache |
+| `translate.py`, `cache.py` | Translation pipeline and shared cache |
+| `translators.py`, `gemini.py`, `own_sessions.py` | CLI/API translators, isolation, ignoring translator-created sessions |
+| `config.py`, `setup_cmd.py`, `doctor.py` | Settings, `ia setup`, `ia doctor` |
 | `personas.py` | Character voice prompts and tone rules |
 
 Log formats and measurements are documented in [docs/log-formats.md](docs/log-formats.md). A Korean
@@ -100,9 +123,15 @@ guide is in [docs/README.ko.md](docs/README.ko.md).
 
 ## Privacy
 
-- Inside AI only **reads** local log files and never writes to the agent CLIs' data.
-- When translation is on, reasoning text is sent to the Google Gemini API. Reasoning can contain code,
-  file paths, or secrets that appeared in your session. Use `IA_TRANSLATE=0` for sensitive work.
+- The collector only **reads** existing local logs and does not edit CLI settings. The separate agy
+  translator creates new conversations in agy's history; Inside AI excludes them from observation.
+- When translation is on, reasoning text is sent to the translator you chose (Google via agy or the
+  Gemini API, Anthropic via Claude Code, OpenAI via Codex). Reasoning can contain code, file paths, or
+  secrets that appeared in your session. Use `IA_TRANSLATE=0` or `ia setup --translator none` for
+  sensitive work.
+- agy tools cannot be fully disabled; Inside AI cancels when a tool event arrives, which may be after
+  an action has started. Existing agy permissions apply. See
+  the isolation limits in [docs/install.md](docs/install.md#how-the-cli-translators-are-isolated).
 - Claude Code stores reasoning only when `"showThinkingSummaries": true` is set; Codex needs
   `model_reasoning_summary`. Inside AI does not change these settings for you.
 - Translations are cached locally in `~/.local/state/inside-ai/`.
@@ -110,6 +139,7 @@ guide is in [docs/README.ko.md](docs/README.ko.md).
 ## Development
 
 ```bash
+git clone https://github.com/gitvssh/inside-ai && cd inside-ai
 uv sync --group dev
 uv run pytest            # unit, integration, and end-to-end tests with fake CLIs
 ```

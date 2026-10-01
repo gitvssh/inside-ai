@@ -10,7 +10,9 @@ def _isolated_user_files(tmp_path, monkeypatch):
     """테스트가 사용자의 실제 설정·상태 파일을 읽거나 쓰지 않게 한다."""
     monkeypatch.setenv("IA_CONFIG", str(tmp_path / "no-config.toml"))
     monkeypatch.setenv("INSIDE_AI_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.delenv("IA_MODEL", raising=False)
+    for name in ("IA_MODEL", "IA_TRANSLATE", "IA_TRANSLATOR", "IA_TRANSLATOR_MODEL", "IA_TRANSLATOR_TIMEOUT",
+                 "GEMINI_API_KEY", "IA_GEMINI_API_KEY", "IA_PERSONA"):
+        monkeypatch.delenv(name, raising=False)
 
 
 def write_jsonl(path: Path, records, mode="w"):
@@ -67,3 +69,14 @@ def roots(tmp_path):
 
 def agy_path(root, sid):
     return root / "brain" / sid / ".system_generated" / "logs" / "transcript_full.jsonl"
+
+
+def fake_cli(bindir: Path, name: str, body: str) -> Path:
+    """합성 데이터만 쓰는 가짜 CLI. 받은 인자·stdin은 FAKE_LOG 폴더에 남긴다."""
+    import sys
+
+    bindir.mkdir(parents=True, exist_ok=True)
+    path = bindir / name
+    path.write_text(f"#!{sys.executable}\n" + body)
+    path.chmod(0o755)
+    return path

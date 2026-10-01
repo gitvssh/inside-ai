@@ -54,6 +54,8 @@ def load_api_key() -> str:
 
 
 class GeminiBackend:
+    label = "Gemini API"
+
     def __init__(
         self,
         model: str | None = None,

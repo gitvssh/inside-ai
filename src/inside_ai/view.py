@@ -70,6 +70,7 @@ class Renderer:
         self.service = service
         self.q: queue.Queue[Event | None] = queue.Queue()
         self.recent: deque[tuple[str, str]] = deque(maxlen=RECENT_CONTEXT)
+        self.last_failure: str | None = None
         self.thread = threading.Thread(target=self._work, daemon=True)
         self.thread.start()
 
@@ -86,6 +87,9 @@ class Renderer:
             if translated:
                 self.recent.append((ev.thought.text[:1500], translated[:1500]))
             failed = self.service.last_error if self.service.enabled and translated is None else None
+            if failed and failed != self.last_failure:  # 같은 이유는 한 번만 알린다
+                self.screen.status(f"번역 실패: {failed}")
+            self.last_failure = failed or self.last_failure
             self.screen.thought(ev, translated, failed)
             self.service.last_error = None
 
@@ -101,7 +105,15 @@ def _pick_link(link_id: str | None) -> links.Link | None:
     return active[-1] if active else None
 
 
-def run(
+def run(*args, **kwargs) -> int:
+    """창이 닫히거나(SIGHUP) 종료 요청(SIGTERM)을 받아도 실행 중인 번역 프로세스를 정리하고 끝낸다."""
+    from .translators import process_lifetime
+
+    with process_lifetime():
+        return _run(*args, **kwargs)
+
+
+def _run(
     link_id: str | None,
     service: TranslationService | None = None,
     out: TextIO = sys.stdout,
@@ -140,7 +152,9 @@ def run(
     link.save()
     screen.clear()
     screen.title(title, persona.color)
-    screen.status(f"{folder} · 연결됨 · 세션 {session.session_id[:8]}" + (" · 한국어 번역" if service.enabled else " · 원문"))
+    label = getattr(service.backend, "label", None)
+    mode = (f" · 한국어 번역({label})" if label else " · 한국어 번역") if service.enabled else " · 원문"
+    screen.status(f"{folder} · 연결됨 · 세션 {session.session_id[:8]}{mode}")
     screen.status("새 생각이 생기면 여기에 표시됩니다.\n")
     renderer = Renderer(screen, service)
 
@@ -172,18 +186,23 @@ def run(
 
 
 def make_service(screen: Screen, translate: bool, persona: Persona = PLAIN) -> TranslationService:
-    """번역 서비스. 끄였거나 키를 못 얻으면 원문 표시로 돌아간다(이유는 한 줄로 알림)."""
+    """설정한 번역기로 번역 서비스를 만든다. 꺼졌거나 시작할 수 없으면 원문 표시(이유는 한 줄로 알림).
+
+    선택한 번역기가 안 되면 다른(유료일 수 있는) 번역기로 몰래 바꾸지 않는다.
+    """
     if not translate or os.environ.get("IA_TRANSLATE") == "0":
         return TranslationService(None)
-    from .gemini import ApiKeyError, GeminiBackend
+    from . import config, translators
 
-    backend = GeminiBackend(persona=persona)
     try:
-        backend.key  # 시작할 때 키를 확인해 문제를 바로 알린다
-    except ApiKeyError as e:
-        screen.status(f"번역을 켤 수 없어 원문으로 표시합니다. {e}")
+        settings = config.translation_settings()
+        backend = translators.make_backend(settings, persona)
+    except (ValueError, translators.TranslatorUnavailable) as e:
+        screen.status(f"번역을 켤 수 없어 원문으로 표시합니다. {e} (`ia doctor`로 확인, `ia setup`으로 변경)")
         return TranslationService(None)
-    return TranslationService(backend)
+    if backend is None:
+        return TranslationService(None)
+    return TranslationService(backend, wait_timeout=settings.timeout + 15)
 
 
 def _finish(screen: Screen, close_wait: float) -> int:

@@ -43,6 +43,7 @@ def test_view_translates_in_order_and_marks_failures(roots, tmp_path):
     assert "<클로드>의 생각은?" in text and "한국어 번역" in text
     assert text.index("번역:one") < text.index("boom") < text.index("번역:three")
     assert "원문(번역 실패)" in text
+    assert text.count("번역 실패: HTTP 503") == 1  # 실패 이유는 한 번 알리고 번역문으로 쓰지 않는다
 
 
 def test_renderer_passes_recent_context(roots, tmp_path):

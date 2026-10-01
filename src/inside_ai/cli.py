@@ -6,6 +6,7 @@ import os
 import sys
 from datetime import datetime, timezone
 
+from . import __version__
 from .collector import Collector, Event
 from .model import Session
 from .sources import ALL_SOURCES
@@ -102,6 +103,7 @@ def cmd_watch(args) -> int:
     )
     fmt = _event_json if args.jsonl else _event_human
     services: dict = {}
+    last_error: list[str | None] = [None]
 
     def service_for(provider: str):
         if provider not in services:
@@ -123,6 +125,9 @@ def cmd_watch(args) -> int:
                 ko = service.translate(ev.thought.text)
                 if ko:
                     ev.thought.extra["translated"] = ko
+                elif service.last_error and service.last_error != last_error[0]:  # 같은 이유는 한 번만
+                    last_error[0] = service.last_error
+                    print(f"번역 실패(원문 표시): {service.last_error}", file=sys.stderr, flush=True)
             line = fmt(ev, args.redact) if args.jsonl else fmt(ev, args.redact, show_delay=not args.replay)
             print(line, flush=True)
     except KeyboardInterrupt:
@@ -151,6 +156,15 @@ def cmd_view(args) -> int:
     return view.run(args.link, close_wait=args.close_wait, translate=not args.original)
 
 
+def _lazy(module: str):
+    def run(args) -> int:
+        import importlib
+
+        return importlib.import_module(f".{module}", __package__).main(args)
+
+    return run
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     from .wrap import PROVIDERS
@@ -162,8 +176,10 @@ def main(argv: list[str] | None = None) -> int:
 
     p = argparse.ArgumentParser(
         prog="ia",
-        description="CLI 에이전트의 생각 보기. `ia claude|codex|agy [인자...]`로 CLI를 실행하면 옆 창에 그 세션의 생각이 뜬다.",
+        description="CLI 에이전트의 생각 보기. `ia claude|codex|agy [인자...]`로 CLI를 실행하면 옆 창에 그 세션의 생각이 뜬다. "
+        "처음에는 `ia setup`으로 번역기를 고르고 `ia doctor`로 점검한다.",
     )
+    p.add_argument("-V", "--version", action="version", version=f"inside-ai {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     def common(sp):
@@ -182,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--replay", action="store_true", help="기존 기록도 처음부터 출력")
     sp.add_argument("--redact", action="store_true", help="생각 본문 대신 글자 수만 출력")
     sp.add_argument("--jsonl", action="store_true", help="측정용 JSON 줄 출력")
-    sp.add_argument("--translate", action="store_true", help="Gemini로 한국어 번역해 출력")
+    sp.add_argument("--translate", action="store_true", help="설정한 번역기로 한국어 번역해 출력(ia setup)")
     sp.add_argument("--interval", type=float, default=0.5, help="폴링 간격(초)")
     sp.add_argument("--duration", help="지정 시간 후 자동 종료 (예: 5m)")
     sp.set_defaults(func=cmd_watch)
@@ -193,7 +209,27 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--original", action="store_true", help="번역하지 않고 원문 표시 (IA_TRANSLATE=0과 같음)")
     sp.set_defaults(func=cmd_view)
 
+    sp = sub.add_parser("setup", help="번역기 선택(agy·claude·codex·gemini-api·none). 다른 설정은 보존")
+    sp.add_argument("--translator", help="agy | claude | codex | gemini-api | none (주면 묻지 않음)")
+    sp.add_argument("--model", help="번역에 쓸 모델 ID(생략하면 현재값 유지, 처음이면 CLI 기본 모델)")
+    sp.add_argument("--default-model", action="store_true", help="모델 지정을 지우고 CLI 기본 모델 사용")
+    sp.add_argument("--timeout", type=float, help="번역 한 건 최대 초")
+    sp.add_argument("-y", "--yes", action="store_true", help="터미널이어도 묻지 않음")
+    sp.set_defaults(func=_lazy("setup_cmd"))
+
+    sp = sub.add_parser("doctor", help="설치·CLI·창·번역 설정 점검(기본은 모델 호출 없음)")
+    sp.add_argument("--json", action="store_true", help="JSON으로 출력")
+    sp.add_argument("--probe", action="store_true", help="짧은 합성 문장 1건을 실제로 번역해 확인(사용량 소비)")
+    sp.add_argument("--translator", help="--probe 때 설정 대신 시험할 번역기(설정은 바꾸지 않음)")
+    sp.add_argument("--model", help="--probe 때 시험할 모델 ID")
+    sp.set_defaults(func=_lazy("doctor"))
+
     args = p.parse_args(argv)
+    if args.cmd in ("watch", "doctor"):
+        from .translators import process_lifetime
+
+        with process_lifetime():
+            return args.func(args)
     return args.func(args)
 
 

@@ -127,3 +127,136 @@ def test_redacted_claude_thinking_shows_setting_hint(env, tmp_path):
     out, _ = view.communicate(timeout=20)
     cli.wait(timeout=5)
     assert "연결됨" in out and "showThinkingSummaries" in out
+
+
+FAKE_AGY_TRANSLATOR = r'''#!/usr/bin/env python3
+# 번역 호출도 일반 세션처럼 기록하고 작업 폴더는 남기지 않는 agy를 흉내 낸다.
+import json, os, re, sys, uuid, datetime
+msg = json.loads(sys.stdin.readline())["message"]["content"]
+cid = str(uuid.uuid4())
+d = os.path.expanduser(f"~/.gemini/antigravity-cli/brain/{cid}/.system_generated/logs")
+os.makedirs(d, exist_ok=True)
+now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+with open(os.path.join(d, "transcript_full.jsonl"), "w") as f:
+    f.write(json.dumps({"step_index": 0, "type": "USER_INPUT", "created_at": now,
+                        "content": "<USER_REQUEST>\n" + msg + "\n</USER_REQUEST>"}) + "\n")
+    f.write(json.dumps({"step_index": 1, "type": "PLANNER_RESPONSE", "created_at": now,
+                        "thinking": "translator internal thinking"}) + "\n")
+src = re.search(r"<(source-[0-9a-f]+)>\n(.*)\n</\1>", msg, re.S).group(2)
+print(json.dumps({"event": "init", "conversation_id": cid}), flush=True)
+print(json.dumps({"event": "result", "result": {"conversation_id": cid, "status": "SUCCESS", "response": "번역:" + src}}))
+'''
+
+
+def test_watch_translate_with_agy_does_not_retranslate_its_own_sessions(env, tmp_path):
+    import json as _json
+    import time as _time
+    from datetime import datetime, timezone
+
+    (tmp_path / "bin" / "agy").write_text(FAKE_AGY_TRANSLATOR)
+    (tmp_path / "bin" / "agy").chmod(0o755)
+    e = dict(env)
+    e.pop("IA_TRANSLATE")
+    user = tmp_path / "home/.gemini/antigravity-cli/brain/USER/.system_generated/logs/transcript_full.jsonl"
+    user.parent.mkdir(parents=True)
+    now = datetime.now(timezone.utc).isoformat()
+    user.write_text(_json.dumps({"step_index": 0, "type": "USER_INPUT", "created_at": now, "content": "hi"}) + "\n")
+    watch = subprocess.Popen([sys.executable, "-m", "inside_ai", "watch", "-p", "agy", "--translate", "--duration", "9s",
+                              "--interval", "0.2"], env=e, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    for i, delay in ((1, 1.5), (2, 5.0)):  # 두 번째 생각은 재탐색(5초) 이후: 번역 세션이 보일 때
+        _time.sleep(delay)
+        with user.open("a") as f:
+            f.write(_json.dumps({"step_index": i, "type": "PLANNER_RESPONSE", "created_at": now,
+                                 "thinking": f"user thought {i}"}) + "\n")
+    out, err = watch.communicate(timeout=30)
+    assert "번역:user thought 1" in out and "번역:user thought 2" in out, (out, err)
+    assert "translator internal thinking" not in out
+    assert len(list((tmp_path / "home/.gemini/antigravity-cli/brain").iterdir())) == 3  # 사용자 1 + 번역 2
+
+
+def test_view_falls_back_to_original_when_translator_missing(env, tmp_path):
+    import shutil
+
+    e = dict(env)
+    e.pop("IA_TRANSLATE")  # 설정 없음 → 기본 번역기 agy. agy가 없으면 원문으로 표시하고 다른 번역기로 바꾸지 않는다
+    e["PATH"] = f"{tmp_path / 'bin'}:/usr/bin:/bin"
+    if shutil.which("agy", path=e["PATH"]):
+        pytest.skip("시스템 PATH에 agy가 있어 '없음' 경로를 만들 수 없음")
+    cli, view = launch(e, tmp_path, "claude", ["plain thought"])
+    out, _ = view.communicate(timeout=20)
+    cli.wait(timeout=5)
+    assert "번역을 켤 수 없어 원문으로 표시합니다" in out and "ia setup" in out
+    assert "plain thought" in out and "· 원문" in out
+
+
+FAKE_AGY_HANG = r'''#!/usr/bin/env python3
+import os, sys, time
+open(os.environ["FAKE_PID_FILE"], "w").write(str(os.getpid()))
+time.sleep(60)
+'''
+
+
+def test_closing_the_pane_stops_an_in_flight_translator(env, tmp_path):
+    import signal
+    import time as _time
+
+    (tmp_path / "bin" / "agy").write_text(FAKE_AGY_HANG)
+    (tmp_path / "bin" / "agy").chmod(0o755)
+    pid_file = tmp_path / "translator.pid"
+    e = dict(env, FAKE_PID_FILE=str(pid_file), FAKE_DELAY="0.2")
+    e.pop("IA_TRANSLATE")
+    cli, view = launch(e, tmp_path, "claude", ["needs translation"])
+    deadline = _time.time() + 15
+    while not pid_file.exists() and _time.time() < deadline:
+        _time.sleep(0.1)
+    assert pid_file.exists(), "번역기가 시작되지 않음"
+    pid = int(pid_file.read_text())
+    view.send_signal(signal.SIGHUP)  # tmux 창이 닫힐 때와 같은 신호
+    view.communicate(timeout=10)
+    cli.wait(timeout=10)
+    deadline = _time.time() + 5
+    while _time.time() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        _time.sleep(0.1)
+    else:
+        pytest.fail("창을 닫은 뒤에도 번역 프로세스가 남아 있음")
+
+
+def test_closing_watch_stops_its_translator(env, tmp_path):
+    import json
+    import signal
+    import time
+
+    (tmp_path / "bin" / "agy").write_text(FAKE_AGY_HANG)
+    (tmp_path / "bin" / "agy").chmod(0o755)
+    pid_file = tmp_path / "watch-translator.pid"
+    e = dict(env, FAKE_PID_FILE=str(pid_file))
+    e.pop("IA_TRANSLATE")
+    log = tmp_path / "home/.gemini/antigravity-cli/brain/USER/.system_generated/logs/transcript_full.jsonl"
+    log.parent.mkdir(parents=True)
+    log.write_text(json.dumps({"type": "USER_INPUT", "content": "synthetic"}) + "\n" +
+                   json.dumps({"step_index": 1, "type": "PLANNER_RESPONSE", "thinking": "synthetic thought"}) + "\n")
+    watch = subprocess.Popen([sys.executable, "-m", "inside_ai", "watch", "-p", "agy", "--translate", "--replay"],
+                             env=e, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        deadline = time.monotonic() + 10
+        while not pid_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert pid_file.exists(), "watch 번역기가 시작되지 않음"
+        pid = int(pid_file.read_text())
+        watch.send_signal(signal.SIGHUP)
+        watch.communicate(timeout=8)
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+    finally:
+        if watch.poll() is None:
+            watch.kill()
+            watch.communicate()
+        if pid_file.exists():
+            try:
+                os.killpg(int(pid_file.read_text()), signal.SIGKILL)
+            except ProcessLookupError:
+                pass

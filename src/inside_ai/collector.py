@@ -6,9 +6,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable
 
+from . import own_sessions
 from .model import Session, Thought
 from .sources.base import Source
 from .tail import FileTail
+
+
+def is_own_translation(source: Source, path: Path) -> bool:
+    """Inside AI가 번역하려고 띄운 CLI 세션 기록인지(own_sessions). 그런 세션은 수집·연결하지 않는다."""
+    excluded = getattr(source, "excluded", None)
+    return bool(excluded and excluded(path))
 
 
 @dataclass
@@ -88,7 +95,10 @@ class Collector:
             for path in src.candidates():
                 tr = self.tracked.get(path)
                 if tr is not None:
-                    sessions.append(tr.session)
+                    if is_own_translation(src, path):
+                        del self.tracked[path]
+                    else:
+                        sessions.append(tr.session)
                     continue
                 try:
                     st = path.stat()
@@ -98,9 +108,13 @@ class Collector:
                     self._baseline[path] = st.st_size
                 if st.st_mtime < since:
                     continue
+                if is_own_translation(src, path):
+                    continue
                 s = self._described.get(path)
                 if s is None:
                     s = self._described[path] = src.describe(path, st.st_mtime)
+                if own_sessions.is_work_path(s.cwd):
+                    continue
                 if self.session_filter is not None and not self.session_filter(s):
                     continue
                 if first and self.replay:
@@ -124,7 +138,10 @@ class Collector:
         if self.sources and self.clock() - self._last_discover >= self.rediscover_every:
             self.discover()
         events: list[Event] = []
-        for tr in self.tracked.values():
+        for path, tr in list(self.tracked.items()):
+            if is_own_translation(tr.source, path):
+                del self.tracked[path]
+                continue
             chunks, reset = tr.tail.poll()
             if reset:
                 self.stats.resets += 1
@@ -142,6 +159,7 @@ class Collector:
                     events.append(
                         Event(th, "new" if prev is None else "revised", observed, tr.tail.offset)
                     )
+        self.stats.sessions = len(self.tracked)
         return events
 
     def run(self, interval: float = 0.5) -> Iterable[Event]:

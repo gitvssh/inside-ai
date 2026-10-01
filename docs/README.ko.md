@@ -7,10 +7,23 @@ CLI 에이전트(agy·Claude Code·Codex)가 남기는 생각 기록을 옆 터�
 
 ## 설치
 
+에이전트(Claude Code·Codex·agy)에게 이렇게 말하면 된다.
+
+> https://github.com/gitvssh/inside-ai 의 docs/install.md를 따라 Inside AI를 설치하고 `ia doctor` 결과를 알려줘.
+
+[install.md](install.md)는 에이전트가 읽고 그대로 실행하는 설치 절차서(영문)다. 환경 확인, uv로 공개 Git
+저장소에서 설치, 번역기 선택, 점검, 업데이트, 제거까지 담았다. 프로젝트 파일·CLAUDE.md·AGENTS.md·스킬·CLI
+설정은 고치지 않도록 정해 두었다. 직접 설치하려면:
+
 ```bash
-git clone https://github.com/gitvssh/inside-ai && cd inside-ai
-uv tool install --editable .      # ia, inside-ai 명령이 ~/.local/bin 에 생김
+uv tool install git+https://github.com/gitvssh/inside-ai.git   # ia, inside-ai 명령이 ~/.local/bin 에 생김
+ia setup              # 번역기 선택(기본 agy). 에이전트용: ia setup --translator agy
+ia doctor             # 오프라인 점검. --probe를 붙이면 합성 문장 1건을 실제 번역
 ```
+
+- 검증된 환경은 Linux와 WSL2다. PyPI에는 올리지 않았다(공개 Git 저장소에서 설치).
+- 업데이트: `uv tool upgrade inside-ai` 후 `ia doctor`. 제거: `uv tool uninstall inside-ai`.
+  설정(`~/.config/inside-ai/config.toml`)과 번역 캐시는 그대로 남는다.
 
 ## ia: CLI를 그대로 쓰면서 옆 창에 생각 보기
 
@@ -37,13 +50,12 @@ ia agy               # ia agy --conversation <id>
 ## 전체 감시·목록
 
 ```bash
-uv sync
-uv run inside-ai sessions                 # 최근 24시간 세션과 생각 블록 수
-uv run inside-ai sessions -p agy --since 7d
-uv run inside-ai watch                    # 모든 CLI의 새 생각을 실시간 출력
-uv run inside-ai watch -p claude --project inside-ai
-uv run inside-ai watch -s 9e7562b9 --replay   # 특정 세션을 처음부터
-uv run inside-ai watch --jsonl --redact   # 측정용: 본문 없이 시각·지연·글자수만
+inside-ai sessions                        # 최근 24시간 세션과 생각 블록 수
+inside-ai sessions -p agy --since 7d
+inside-ai watch                           # 모든 CLI의 새 생각을 실시간 출력
+inside-ai watch -p claude --project inside-ai
+inside-ai watch -s 9e7562b9 --replay        # 특정 세션을 처음부터
+inside-ai watch --jsonl --redact           # 측정용: 본문 없이 시각·지연·글자수만
 ```
 
 - `watch`는 시작 시점 이후에 새로 기록된 생각만 낸다(`--replay`는 기존 기록 포함).
@@ -53,6 +65,7 @@ uv run inside-ai watch --jsonl --redact   # 측정용: 본문 없이 시각·지
 ## 개발
 
 ```bash
+git clone https://github.com/gitvssh/inside-ai && cd inside-ai
 uv run --group dev pytest
 ```
 
@@ -60,16 +73,33 @@ uv run --group dev pytest
 
 ## 한국어 번역
 
-- `ia` 생각 창은 기본으로 Gemini API(`gemini-3.8-flash`, 추론 수준 low)로 번역해 보여준다. 한 건 1~2초.
-  `inside-ai watch --translate`도 같다.
-- **생각 원문이 Google Gemini API로 전송된다.** 코드·경로·비밀값이 생각에 들어 있으면 함께 전송될 수 있다.
+- 번역기는 `ia setup`으로 고른다. 감시하는 CLI와 번역기는 별개다(예: `ia claude`의 생각을 agy로 번역).
+
+  | 번역기 | 쓰는 것 | 생각 원문이 전송되는 곳 | 한 건 지연(실측) |
+  |---|---|---|---|
+  | `agy` (기본) | 기존 agy 로그인 | Google(agy 계정) | 7~20초(모델에 따라) |
+  | `claude` | 기존 Claude Code 로그인 | Anthropic | 16~23초(haiku) |
+  | `codex` | 기존 Codex 로그인 | OpenAI | 6~10초 |
+  | `gemini-api` | Gemini API 키 | Google Gemini API | 1~2초 |
+  | `none` | — | 전송 안 함(원문) | — |
+
+  `--model`을 생략하면 그 CLI의 기본 모델을 쓴다(`agy models`로 목록 확인, Claude는 `haiku`·`sonnet` 같은 별칭).
+  Codex는 사용자 설정을 제외하므로 내장 기본 모델을 쓴다. Claude Code는 haiku로 검증했다.
+  모델·계정에 따라 제공자 거절이 발생할 수 있으며, 이때 이유와 원문을 표시한다.
+  번역은 고른 계정의 사용량·구독 한도를 쓴다.
+- CLI 번역기는 번역 한 건마다 빈 임시 폴더에서 비대화로 새로 실행한다. 원문은 stdin으로만 보내고, 사용자 코딩
+  세션을 이어 쓰지 않으며, 도구·MCP·훅·스킬·프로젝트 지침은 CLI가 허용하는 만큼 끈다. 권한 우회 플래그는 쓰지 않는다.
+  agy는 모든 도구를 끄는 방법이 확인되지 않았다. 도구 단계가 보이면 중단하지만 이미 시작된 동작은
+  막지 못할 수 있고, 기존 agy 권한 설정이 적용된다(자세한 한계는 install.md의 격리 표).
+- agy는 번역 호출도 자기 대화 목록에 남긴다. Inside AI는 그 세션을 알아보고(요청 첫 줄의 표식, 기록한 대화 ID,
+  임시 폴더 이름) 생각 창·`watch`·세션 연결에서 뺀다. agy의 `/resume` 목록에는 남는다.
+- **생각 원문이 고른 제공자로 전송된다.** 코드·경로·비밀값이 생각에 들어 있으면 함께 전송될 수 있다.
   민감한 작업은 `ia view --original` 또는 `IA_TRANSLATE=0 ia claude`로 원문만 본다.
-- API 키: `GEMINI_API_KEY` 환경변수 → 없으면 설정 파일 `~/.config/inside-ai/config.toml`의
-  `[gemini] key_command`(키를 표준출력으로 내는 명령, 셸 없이 실행)로 받아 메모리에만 둔다.
-  비밀 저장소(pass, 1Password CLI, Vault 등)를 쓰려면 그 조회 명령을 적는다. 모델 변경은 `IA_MODEL`
-  또는 `[gemini] model`.
-- 키를 못 얻으면(비밀 저장소 로그인 만료 등) 창에 이유와 `key_hint`를 한 줄 알리고 원문으로 표시한다. 번역이 실패한 생각은
-  `원문(번역 실패)` 표시와 함께 원문으로 보여준다(일시 오류는 한 번 재시도).
+- Gemini API 키: `GEMINI_API_KEY` 환경변수 → 없으면 설정 파일의 `[gemini] key_command`(키를 표준출력으로 내는
+  명령, 셸 없이 실행)로 받아 메모리에만 둔다. 0.1.x처럼 `[gemini]` 설정이나 `GEMINI_API_KEY`가 있고 `[translation]`이
+  없으면 계속 Gemini API로 번역한다. agy로 바꾸려면 `ia setup --translator agy`.
+- 번역기를 시작할 수 없으면(설치 안 됨·키 없음) 창에 이유를 한 줄 알리고 원문으로 표시한다. 다른 번역기로 몰래
+  바꾸지 않는다. 번역이 실패한 생각은 이유를 한 번 알리고 `원문(번역 실패)` 표시와 함께 원문으로 보여준다.
 - **캐릭터 말투**: CLI마다 작성자가 만든 의인화 캐릭터 설정을 따른 말투로 옮긴다(`src/inside_ai/personas.py`).
   | CLI | 캐릭터 | 말투 |
   |---|---|---|
@@ -87,4 +117,4 @@ uv run --group dev pytest
 
 번역 결과는 `~/.local/state/inside-ai/translations.sqlite`에 원문 해시(번역기 ID 포함) 단위로 저장한다.
 창 여러 개가 같은 생각을 동시에 만나도 한 창만 번역하고 나머지는 결과를 기다린다. 창을 다시 열거나
-재시작해도 저장된 번역을 재사용한다. 번역 중 창이 죽으면 90초 뒤 다른 창이 이어받는다.
+재시작해도 저장된 번역을 재사용한다. 번역 중 창이 죽으면 번역 제한 시간보다 조금 더 지난 뒤(기본 2분) 다른 창이 이어받는다. 번역기·모델·말투가 바뀌면 캐시도 따로 쌓인다.
