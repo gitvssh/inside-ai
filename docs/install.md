@@ -11,13 +11,34 @@ is injected into the user's coding sessions, so no skill, prompt, or per-task in
 Jump to your shell: [Linux / WSL2](#linux-and-wsl2) · [Windows PowerShell](#windows-powershell) ·
 [macOS](#macos). Then continue with [choosing the translator](#4-choose-the-translator).
 
+## Installation flow
+
+When the user says “install Inside AI”, carry the work through configuration and verification:
+
+1. Detect the actual target OS, installed CLI executables, and any existing Inside AI installation.
+2. Install or update the package using the matching OS section below, and make `ia` usable in the
+   user's terminal. Keep existing working preferences; an old installation may still need repair.
+3. Read `ia doctor --json` and `ia persona list --json`. Choose the translator using the decision table
+   in step 4; do not leave an unavailable default `agy` selected on a Claude-only machine.
+4. Ask only for unresolved choices: a Claude translation model, the tone if not chosen before, and
+   any actual ambiguity. Bundle model and tone questions into one message when both are needed.
+5. Save the choices with explicit, non-interactive `ia setup` arguments, then complete step 6 with
+   one synthetic translation through the effective settings. Address log/pane requirements for the
+   CLI the user will observe, and report the start command and any remaining limits.
+
+The installer agent makes these decisions. Bare `ia setup` in a non-interactive session does not
+choose Claude when agy is absent, and `ia claude` does not run a setup wizard. Do not defer unfinished
+configuration to the user's first run.
+
 ## Rules for the installing agent
 
 - Identify the OS where the agent process and the user's coding CLI actually run before choosing a
   section. PowerShell can also run on Linux/macOS; the shell name alone is insufficient. A cloud
   workspace or WSL installation does not install the tool into the user's native Windows environment.
 - Once uv is available, check `uv tool list` before installing. If `inside-ai` is already present,
-  follow [Update](#update), preserve its translator and tone, and skip the first-install questions.
+  follow [Update](#update), then inspect whether its effective translator actually works. Preserve
+  working choices and existing tones; repair unavailable settings using step 4 instead of treating
+  “already installed” as “ready to use”.
 
 - Do **not** edit the user's project files, `CLAUDE.md`, `AGENTS.md`, skills, hooks, MCP configuration,
   or the settings of Claude Code / Codex / agy. Steps that touch those settings are optional; show the
@@ -175,42 +196,92 @@ can be translated by agy.
 | `gemini-api` | Gemini API key | Google Gemini API | Fastest (~1–2 s). Needs a key (see below). |
 | `none` | nothing | nowhere | Shows the original English text. |
 
-Decision rule for the agent:
+### Inspect before choosing
 
-1. If the user named a translator, or the config already has one (update/reinstall), keep it.
-2. Otherwise, if `agy` is installed, use `agy` (`ia setup` picks it automatically when no choice
-   was made before).
-3. Otherwise ask the user to choose among the installed CLIs, `gemini-api`, or `none`. Do not pick a
-   paid option silently, and do not install every agent CLI.
+Run `ia doctor --json` after the package is available. Inspect the `cli.claude`, `cli.codex`, and
+`cli.agy` checks for executable discovery, launcher problems, version, and local login status. Inspect
+`translation.data` for `provider`, `model`, `source`, and `config_exists`. Exit code 1 means a check
+failed: read the checks and repair the relevant finding; it is not proof that package installation
+failed. A malformed or missing JSON response is a command error and must be investigated separately.
 
-"Installed" is not "logged in": `ia doctor` shows both, and only `ia doctor --probe` proves a translation
-works. If the probe fails for agy, tell the user, suggest an installed alternative, and mention that it
-uses a different account and model.
+Use executable availability in the target environment, not the name of the agent talking to the
+user. If a CLI exists elsewhere, repair its PATH and check again. A discovered but unusable launcher
+is not an available translator. A known logged-out CLI needs login before it can be verified;
+`login: unknown` needs a probe, not a claim that login works. Do not install agy just to satisfy the
+default when the user's existing Claude or Codex can translate.
+
+### Translator decision table
+
+Apply these rules in order. State the selected account/provider and that translation consumes its
+quota before using it. A sole available CLI can be selected by the installer without making the user
+choose the same provider again. Reuse any model choice or explicit delegation of defaults already given.
+
+| Situation | Installer action | Model / user question |
+|---|---|---|
+| The user explicitly chose a translator or original-only mode | Honor that choice. If unavailable, explain the blocker and available alternatives; do not override an explicit choice. | Keep their model; ask only if missing and needed below. `none` needs no model or probe. |
+| An existing non-default translator choice is usable (including legacy Gemini API) | Keep it and verify it. Do not replace it because agy is also installed. | Preserve the existing model and tone; do not ask again. |
+| No working choice, and agy is available | Select `agy`. | Use its CLI default with `ia setup --translator agy --default-model`; no model question unless the user requested one. |
+| No working choice, no agy, and only Claude is available | Select `claude`; tell the user it will use their Claude account. | Ask which translation model to use; then save it explicitly. Do not leave agy selected. |
+| No working choice, no agy, and only Codex is available | Select `codex`. | Use `ia setup --translator codex --default-model` unless the user already specified a model. This is Codex's built-in default, not necessarily the model of the coding session. |
+| Claude and Codex are available, agy is absent, and no working choice exists | Prefer the CLI running this installation session if it is one of those usable CLIs. If the session cannot be identified, ask which of the two to use. | Apply the corresponding Claude/Codex model rule above. |
+| No usable CLI translator and no working existing API setup | Explain the missing prerequisite. Ask whether to log into/install the user's chosen CLI, configure their Gemini API key, or use `none`. | Do not create a paid account, request a key in chat, or label original-only mode as translation success. |
+
+For a Claude-only user, ask a concrete question instead of sending them to a manual setup command:
+
+> Claude만 사용할 수 있어 번역기도 Claude로 설정하겠습니다. Claude 계정의 사용량을 씁니다.
+> 번역 모델은 무엇으로 할까요? `haiku`(이 프로젝트에서 번역 확인), CLI 기본 모델, 또는 원하는 모델 ID.
+> 번역 말투도 골라 주세요: CLI별 캐릭터 `auto`, 담백한 반말 `plain`, 차분한 해요체 `polite`, 또는 직접 설명.
+
+Omit the tone question if already answered. If the user has delegated all defaults, state the choice
+and use `haiku` for Claude (the project's verified example), then probe it; otherwise do not invent a
+model answer when the user has not replied. Finish independent installation work and report that the
+model choice remains pending. For agy, simply announce the automatic choice and ask only for the tone
+if needed: “agy가 있어 번역기는 agy 기본 모델로 설정하겠습니다. 번역 말투는 어떻게 할까요?”
+
+Use the matching command, not every command below:
 
 ```bash
-ia setup --translator agy                     # non-interactive; omit --model to use the CLI default
-ia setup --translator claude --model haiku
-ia setup --translator codex
-ia setup --translator none
-ia setup                                      # interactive menu when run in a terminal
+ia setup --translator agy --default-model             # agy default, only when choosing/resetting it
+ia setup --translator claude --model haiku             # when haiku was chosen or defaults delegated
+ia setup --translator claude --default-model           # when the user chose the CLI default
+ia setup --translator codex --default-model            # Codex-only default
+ia setup --translator none                            # original text, when chosen
 ```
 
-`ia setup` only changes the `[translation]` and `[persona]` tables of the config file; comments and
-other tables are kept and the file is replaced atomically. Re-running it with the same values changes
-nothing. Without `--translator` and without a terminal, it never waits for input: it keeps an existing
-choice, chooses `agy` on a first install when agy exists, and otherwise exits with code 2 listing
-the options.
+For a user-specified model ID, pass that ID with `--model`. `--default-model` clears an old model
+setting; merely omitting `--model` can keep a previous value. Do not use the default-reset commands
+to overwrite a working user's chosen model. The commands above work in both bash/zsh and PowerShell.
 
-Models: omit `--model` to use the CLI's default (Codex uses its built-in default because user config is
-excluded from translation). List or choose models with `agy models`, Claude Code's
-`--model` aliases (`haiku`, `sonnet`, `opus`), or the model IDs available to the user's Codex account.
-`--default-model` removes a previous choice. Changing the model or provider starts a separate
-translation cache.
+`ia setup` changes only its translation/persona settings and preserves other tables and comments.
+Always pass `--translator` (and the chosen `--model` or `--default-model`) when configuring through an
+agent, so it does not wait for terminal input or keep an unavailable default. Add `--persona <id>`
+when a tone was chosen. Use bare `ia setup` only for a human intentionally using its interactive menu.
+The setup command checks executable availability; saving successfully does not prove translation works.
 
-Claude Code was validated with `haiku`. Other models can be selected, but their behavior depends on
-the account and provider; the default model in one validation returned a provider refusal. Inside AI
-reports such failures and shows the original text. `ia doctor --probe --translator claude --model <id>`
-checks the selected model without changing config.
+Models can be selected from `agy models`, Claude Code's aliases (`haiku`, `sonnet`, `opus`), or model IDs
+available to the user's account. These are examples, not a guarantee that the account can use every
+model. Claude translation was verified with `haiku`; one validation of another default model returned
+a provider refusal. A probe of the selected model is the acceptance check.
+
+### Repair an incomplete installation or failed update
+
+If an existing install still selects agy but agy cannot run, diagnose PATH/launcher/login first. If it
+is an unconfigured default (`source: default`) or a leftover setup the user wants repaired, use the
+table above. On a Claude-only machine, announce that Claude will replace unavailable agy, ask the
+Claude model question once, save it, and probe it. An explicit current request to keep agy takes
+priority; arrange login/installation or explain that blocker instead.
+
+Do not preserve a broken provider merely because `config_exists` is true. Do not delete the config,
+reset all settings, or rerun tone questions that were already answered. If the failure is login, quota,
+network, or model access, distinguish it from “CLI missing”; do not install another CLI as a blind fix
+or repeatedly retry a paid probe without changing the cause. Offer the available alternative and
+reuse the user's answer rather than asking a second provider confirmation.
+
+Environment overrides can defeat a saved change: `IA_TRANSLATOR`, `IA_TRANSLATOR_MODEL`, `IA_MODEL`,
+`IA_TRANSLATOR_TIMEOUT`, or `IA_TRANSLATE=0`. Identify the overriding variable without printing
+secrets; resolve a stale Inside AI override in the intended execution environment within the user's
+instructions. Preserve an intentional override. Finish with a probe **without** `--translator` or
+`--model` overrides, so it tests what the user will actually run.
 
 ### Gemini API key (only for `gemini-api`)
 
@@ -227,17 +298,21 @@ key_hint = "Unlock your password store and retry."
 On Windows prefer the array form so backslashes in paths are kept:
 `key_command = ['C:\Tools\op.exe', 'read', 'op://vault/gemini/key']`.
 
-## 5. Ask for the translation tone (first install only)
+## 5. Choose the translation tone once
 
 Inside AI translates in a tone ("persona"). The default `auto` gives each observed CLI its own character.
-On a **first install** with a translator other than `none`, ask the user **once**:
+For a **first install or previously unfinished setup** with a translator other than `none`, ask the
+user **once** if no tone choice has been given:
 
 > Which tone should the Korean translation use? `auto` (a character per CLI — default), `plain`
 > (plain casual Korean), `polite` (calm 해요체), one specific character (`claude-chan`, `gpt-chan`,
 > `gemini-chan`), or describe your own tone.
 
-How to tell whether it is a first install: `ia persona list --json` shows `"configured": false`. On
-updates or when `"configured": true`, do not ask; keep the existing choice.
+`ia persona list --json` shows `"configured": false` when there is no saved tone choice, even on some
+older installations; it is not proof that the package was just installed. Preserve a configured tone,
+an intentional `IA_PERSONA` override, or the user's previous answer/skip. On an ordinary update keep
+the existing tone (including implicit `auto`); when completing a previously unfinished setup, bundle
+this question with the model question if the user has never chosen or skipped it.
 
 Apply the answer:
 
@@ -258,11 +333,31 @@ ia setup --persona my-tone                       # use the custom tone
 
 ## 6. Verify
 
+After saving the selection, verify the **effective** configuration in the same environment the user
+will run. Tell the user that one short synthetic translation uses the selected account's quota, then
+run it as part of the requested installation verification; do not ask for redundant approval. Honor
+an instruction not to make model calls. Skip the probe for intentional `none` mode.
+
 ```bash
-ia doctor            # offline: OS, PATH, CLIs (installed vs logged in), pane mode, translator, tone, logs
-ia doctor --probe    # translates one synthetic sentence with the configured translator
-ia doctor --json     # machine-readable (ASCII); exit code 1 if any check failed
+ia doctor --json             # check effective provider/model, CLI/login, tone, logs, and pane
+ia doctor --probe --json     # one synthetic translation through the saved/effective settings
 ```
+
+Inspect the `probe` check itself: only `status: ok` proves that the test translation succeeded.
+`status: info` for `none` is a skipped probe, and an offline doctor result is not a translation test.
+A failed test needs the repair flow in step 4. Do not run another probe if the same settings already
+passed during this installation. `ia persona preview` is optional and does not replace checking the
+effective provider/model with doctor.
+
+Before reporting “ready to use”, confirm:
+
+- The intended terminal can run `ia`, and the effective provider/model/tone match the choices.
+- A translation probe passed, or the user intentionally chose original-only mode. If probing was
+  declined or could not run, report “installed and configured; translation not verified”.
+- The observed CLI's reasoning-log requirements in step 7 are satisfied, or explicitly report that
+  thought display still needs that setting. A translation probe does not prove logs are available.
+- Explain the actual pane mode and give `ia view <id>` for a second terminal when automatic splitting
+  is unavailable. Do not launch an interactive agent or open windows just to test installation.
 
 `doctor` separates *installed* from *logged in*. Claude Code and Codex login state is read from their
 local status commands (`claude auth status`, `codex login status`); agy has no such command, so its
@@ -306,7 +401,7 @@ IA_TRANSLATE=0 ia claude      # original text for sensitive work (PowerShell: $e
 
 ```bash
 uv tool upgrade --reinstall inside-ai     # refetches the current archive; settings and tones are kept
-ia doctor
+ia doctor --json                         # inspect settings and repair an unavailable translator
 ```
 
 `--reinstall` matters for archive installs: plain `uv tool upgrade inside-ai` only notices a new
@@ -319,7 +414,10 @@ Installed with Git before 0.3 (`git+https://github.com/gitvssh/inside-ai.git`)? 
 `uv tool upgrade inside-ai` fetches the latest commit when Git is available. To drop the Git requirement,
 reinstall once from the archive with `uv tool install --force <archive URL>`.
 
-Updates never touch the config file, custom tones (`personas/`), or the translation cache. Upgrading
+The package upgrade itself never touches the config file, custom tones (`personas/`), or the
+translation cache. It also does not repair a missing translator. The installer must follow step 4
+for unavailable settings, then step 6 before reporting the installation ready; `uv tool upgrade`
+success alone is insufficient. Preserve working preferences instead of resetting them. Upgrading
 from 0.1.x: if the config already has a `[gemini]` table or `GEMINI_API_KEY` is set and no
 `[translation]` table exists, Gemini API stays the translator. Run `ia setup --translator agy` to switch.
 Upgrading from 0.2: the tone stays `auto` (same characters as before) until the user picks one.
@@ -427,7 +525,9 @@ translation failure. The original coding CLI continues running.
 
 ## Report to the user
 
-After installing, tell the user: the installed version (`ia --version`), the translator and model, where
-reasoning text is sent, the tone (and whether they chose it or `auto` is in effect), the `ia doctor`
-result (and `--probe` if run), whether this OS is validated or only prepared, any optional settings from
-step 7 that they may want to change, and how to start (`ia claude` / `ia codex` / `ia agy`).
+Start the final report with the actual status: ready to translate, original-only by choice, or installed
+but still requiring a model choice/login/log setting/verification. Include the installed version,
+effective translator/model, destination and account usage, tone (chosen or implicit `auto`), probe
+result or reason it was skipped, and the exact start command for the user's CLI. Mention manual pane
+steps and Windows/macOS native-validation limits when applicable. List only unresolved actions the
+user must take; do not hand them routine setup commands that the installer could already execute.

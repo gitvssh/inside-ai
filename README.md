@@ -11,14 +11,21 @@ The agent CLIs are not modified, patched, or proxied, and nothing is injected in
 
 Paste this into Claude Code, Codex, or agy:
 
-> Install Inside AI from https://github.com/gitvssh/inside-ai by following docs/install.md, then run
-> `ia doctor` and tell me the result.
+> Install and configure Inside AI from https://github.com/gitvssh/inside-ai by following docs/install.md.
+> Choose a translator from my installed CLIs, ask me only for missing model/tone choices, and verify
+> that I can use it.
 
 [docs/install.md](docs/install.md) is an agent-readable runbook with separate steps for
 [Linux / WSL2](docs/install.md#linux-and-wsl2), [Windows PowerShell](docs/install.md#windows-powershell),
 and [macOS](docs/install.md#macos): environment checks, installation with uv from the public source
 archive (Git is not required), translator and tone selection, verification, update, and removal. It
 tells the agent not to edit your projects, `CLAUDE.md`/`AGENTS.md`, skills, or CLI settings.
+
+For a new or unfinished setup, the agent selects agy with its default model when available. If only
+Claude is available, it selects Claude and asks which translation model to use; if only Codex is
+available, it uses Codex's built-in default. Working preferences are kept. An unavailable old choice
+is repaired, and the agent checks a synthetic translation before reporting it ready. See the
+[decision table](docs/install.md#translator-decision-table) for precedence and exceptions.
 
 Linux and WSL2 are validated. Native Windows and macOS support is prepared and covered by contract tests
 but has not yet been validated on real machines.

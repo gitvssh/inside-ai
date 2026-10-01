@@ -9,12 +9,26 @@ CLI 에이전트(agy·Claude Code·Codex)가 남기는 생각 기록을 옆 터�
 
 에이전트(Claude Code·Codex·agy)에게 이렇게 말하면 된다.
 
-> https://github.com/gitvssh/inside-ai 의 docs/install.md를 따라 Inside AI를 설치하고 `ia doctor` 결과를 알려줘.
+> https://github.com/gitvssh/inside-ai 의 docs/install.md를 따라 설치하고 바로 쓸 수 있게 설정해줘.
+> 설치된 CLI를 보고 번역기를 정하고, 아직 정하지 않은 모델·말투만 물어본 뒤 실제 번역까지 확인해줘.
 
 [install.md](install.md)는 에이전트가 읽고 그대로 실행하는 설치 절차서(영문)다. Linux·WSL2, Windows
 PowerShell, macOS별 절차와 환경 확인, uv로 공개 소스 압축본에서 설치(Git 필요 없음), 번역기·말투 선택, 점검,
 업데이트, 제거까지 담았다. 프로젝트 파일·CLAUDE.md·AGENTS.md·스킬·CLI 설정은 고치지 않도록 정해 두었다.
-첫 설치 때 에이전트가 원하는 번역 말투를 한 번 묻는다(답하지 않으면 기본 auto 유지). 직접 설치하려면:
+설치 에이전트는 [선택 기준](install.md#translator-decision-table)에 따라 구성한다.
+
+| 처음 설치하거나 설정을 끝내지 못한 환경 | 에이전트가 하는 일 |
+|---|---|
+| agy 사용 가능 | agy와 CLI 기본 모델로 설정하고, 미정인 말투만 질문 |
+| agy 없이 Claude만 사용 가능 | Claude를 번역기로 정하고 번역 모델·미정인 말투를 함께 질문 |
+| agy 없이 Codex만 사용 가능 | Codex와 내장 기본 모델로 설정 |
+| agy 없이 Claude·Codex 모두 사용 가능 | 설치를 진행 중인 CLI를 우선 선택하고, 어느 세션인지 알 수 없으면 한 번 질문 |
+| 기존 번역기가 없어 사용 불가 | 기존 선택의 의도와 실패 원인을 확인해 사용 가능한 번역기로 복구하고 실제 번역 확인 |
+
+사용자가 지정한 번역기·모델과 정상 동작하는 기존 설정이 우선이다. 번역은 선택한 계정의 사용량을 쓴다고
+알리고, 합성 예문으로 실제 동작을 확인한다. 이미 고른 말투는 보존하며, 질문에 답하지 않았다고 모델 선택을
+꾸며서 저장하지 않는다. `ia` 설치·업데이트만 성공한 상태를 번역까지 사용 가능한 상태로 보고하지 않는다.
+첫 설정에서 원하는 말투를 한 번 묻되, 건너뛰면 `auto`를 유지한다. 직접 설치하려면:
 
 ```bash
 uv tool install https://github.com/gitvssh/inside-ai/archive/refs/heads/main.zip   # ia, inside-ai 명령 생성
@@ -26,7 +40,8 @@ ia doctor             # 오프라인 점검. --probe를 붙이면 합성 문장 
   아직 없다(`ia doctor`가 `!`로 알려 준다). PyPI에는 올리지 않았다.
 - PowerShell: 설치 직후 이 창에서 `ia`가 안 보이면 `$env:Path = "$(uv tool dir --bin);$env:Path"`, 새 창부터는
   `uv tool update-shell`. uv가 없으면 `winget install --id=astral-sh.uv -e`(실행 정책은 바꾸지 않는다).
-- 업데이트: `uv tool upgrade --reinstall inside-ai` 후 `ia doctor`. 압축본 설치는 버전이 같으면 `--reinstall`
+- 업데이트: `uv tool upgrade --reinstall inside-ai` 후 `ia doctor --json`. 기존에 agy를 못 찾았던 경우에는
+  위 선택 기준으로 번역기를 복구하고 `ia doctor --probe --json`으로 확인한다. 압축본 설치는 버전이 같으면 `--reinstall`
   없이는 새 내용을 받지 않는다. 0.2까지 `git+https://…`로 설치했다면 `uv tool upgrade inside-ai`도 그대로 된다.
   제거: `uv tool uninstall inside-ai`. 설정(`~/.config/inside-ai/config.toml`)·말투 파일·번역 캐시는 그대로 남는다.
   Windows에서도 위치는 `%USERPROFILE%\.config\inside-ai\`처럼 사용자 홈 아래 같은 경로다.
