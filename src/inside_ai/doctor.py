@@ -26,7 +26,9 @@ PROBE_TEXT = "Checking that the translation cache key includes the model id befo
 INSTALL_SOURCE = "https://github.com/gitvssh/inside-ai/archive/refs/heads/main.zip"  # Git 없이 설치·업데이트
 GIT_SOURCE = "git+https://github.com/gitvssh/inside-ai.git"  # 예전 설치(그대로 업데이트 가능)
 OK, WARN, FAIL, INFO = "ok", "warn", "fail", "info"
-CLI_NAMES = {"claude": "Claude Code", "codex": "Codex CLI", "agy": "Antigravity CLI (agy)"}
+CLI_NAMES = {"claude": "Claude Code", "codex": "Codex CLI", "agy": "Antigravity CLI (agy)",
+             "grok": "Grok Build CLI (생각 보기만)", "kiro": "Kiro CLI (생각 보기만)"}
+MAIN_CLIS = ("claude", "codex", "agy")
 
 
 @dataclass
@@ -103,7 +105,9 @@ def check_install() -> Check:
 
 def cli_status(name: str) -> dict:
     """설치 여부·버전·로그인 상태(로컬 확인). 로그인 상태: yes | no | unknown."""
-    cmd = oscompat.find_command(name)
+    from .wrap import command_name
+
+    cmd = oscompat.find_command(command_name(name))
     st: dict = {"installed": cmd.found, "path": cmd.path, "launch": cmd.kind, "version": None, "login": "unknown"}
     if not cmd.found:
         return st
@@ -132,10 +136,14 @@ def check_clis(statuses: dict[str, dict]) -> list[Check]:
     out = []
     for name, st in statuses.items():
         if not st["installed"]:
-            out.append(Check(f"cli.{name}", INFO, f"{CLI_NAMES[name]}: 설치 안 됨(필요할 때만 설치)", None, st))
+            if name in MAIN_CLIS:
+                out.append(Check(f"cli.{name}", INFO, f"{CLI_NAMES[name]}: 설치 안 됨(필요할 때만 설치)", None, st))
             continue
         if st.get("problem"):
             out.append(Check(f"cli.{name}", WARN, f"{CLI_NAMES[name]}: 찾았지만 안전하게 실행할 수 없는 런처", st["problem"], st))
+            continue
+        if name not in MAIN_CLIS:  # 번역기로 쓰지 않으므로 로그인은 확인하지 않는다
+            out.append(Check(f"cli.{name}", OK, f"{CLI_NAMES[name]}: 설치됨({st['version'] or '버전 미확인'})", None, st))
             continue
         login = {"yes": "로그인 확인됨", "no": "로그인 안 됨", "unknown": "로그인 미확인(--probe로 확인)"}[st["login"]]
         status = WARN if st["login"] == "no" else OK
@@ -286,7 +294,7 @@ def check_persona() -> Check:
             effective[agent] = {"id": sel.persona.key, "source": sel.source}
         except personas.PersonaError as e:
             problems.append(str(e))
-            effective[agent] = {"error": str(e), "fallback": personas.PERSONAS[agent].key}
+            effective[agent] = {"error": str(e), "fallback": personas.PERSONAS.get(agent, personas.PLAIN).key}
     try:
         configured = personas.persona_settings(data).configured
     except personas.PersonaError:

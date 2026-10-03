@@ -90,8 +90,10 @@ def _event_human(ev: Event, redact: bool, show_delay: bool = True) -> str:
     delay = f" · 지연 {ev.delay_s:.1f}s" if show_delay and ev.delay_s is not None else ""
     tag = " · 수정됨" if ev.kind == "revised" else ""
     head = f"── {th.provider} · {th.session_id[:8]} · {_project(th.cwd)} · {when}{delay}{tag} ──"
-    body = f"[생각 {len(th.text)}자]" if redact else (th.extra.get("translated") or th.text).strip()
-    return f"{head}\n{body}\n"
+    from .view import clean
+
+    body = f"[생각 {len(th.text)}자]" if redact else clean((th.extra.get("translated") or th.text).strip())
+    return f"{clean(head)}\n{body}\n"
 
 
 def cmd_watch(args) -> int:
@@ -180,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p = argparse.ArgumentParser(
         prog="ia",
-        description="CLI 에이전트의 생각 보기. `ia claude|codex|agy [인자...]`로 CLI를 실행하면 옆 창에 그 세션의 생각이 뜬다. "
+        description="CLI 에이전트의 생각 보기. `ia claude|codex|agy|grok|kiro [인자...]`로 CLI를 실행하면 옆 창에 그 세션의 생각이 뜬다. "
         "처음에는 `ia setup`으로 번역기를 고르고 `ia doctor`로 점검한다.",
     )
     p.add_argument("-V", "--version", action="version", version=f"inside-ai {__version__}")
@@ -219,10 +221,27 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--default-model", action="store_true", help="모델 지정을 지우고 CLI 기본 모델 사용")
     sp.add_argument("--timeout", type=float, help="번역 한 건 최대 초")
     sp.add_argument("--persona", metavar="ID", help="번역 말투(ia persona list). 이것만 주면 번역기·모델은 그대로 둠")
-    sp.add_argument("--for-agent", choices=["claude", "codex", "agy"],
+    sp.add_argument("--for-agent", choices=["claude", "codex", "agy", "grok", "kiro"],
                     help="--persona를 이 CLI(관찰 대상)에만 적용. --persona inherit로 예외 삭제")
+    sp.add_argument("--usage", choices=["on", "off"], help="생각 창의 토큰 사용량 표시(턴별·하단 세션 합계)")
+    sp.add_argument("--memo", choices=["on", "off"], help="생각 창 위쪽의 프로젝트 메모 표시(ia memo)")
     sp.add_argument("-y", "--yes", action="store_true", help="터미널이어도 묻지 않음")
     sp.set_defaults(func=_lazy("setup_cmd"))
+
+    sp = sub.add_parser("memo", help="프로젝트 메모(목표 등) 보기·쓰기. 생각 창 위쪽에 보이고 에이전트에게는 전달되지 않음")
+    sp.add_argument("--project", metavar="DIR", help="대상 폴더(생략하면 지금 폴더가 속한 프로젝트)")
+    msub = sp.add_subparsers(dest="memo_cmd")
+    msub.add_parser("show", help="메모 보기(기본)")
+    mp = msub.add_parser("add", help="한 줄 덧붙이기")
+    mp.add_argument("text", nargs="+", help="덧붙일 내용(- 를 주면 표준 입력)")
+    mp = msub.add_parser("set", help="메모를 통째로 바꾸기")
+    mp.add_argument("text", nargs="+", help="새 내용(- 를 주면 표준 입력)")
+    msub.add_parser("edit", help="편집기로 고치기($VISUAL·$EDITOR, 없으면 nano·vi·메모장)")
+    mp = msub.add_parser("clear", help="메모 지우기")
+    mp.add_argument("-y", "--yes", action="store_true", help="묻지 않고 지움")
+    msub.add_parser("list", help="메모가 있는 프로젝트 목록")
+    msub.add_parser("path", help="메모 파일 위치")
+    sp.set_defaults(func=_lazy("memo_cmd"))
 
     sp = sub.add_parser("persona", help="번역 말투 목록·만들기·미리보기")
     psub = sp.add_subparsers(dest="persona_cmd", required=True)
@@ -238,7 +257,7 @@ def main(argv: list[str] | None = None) -> int:
     pp.add_argument("--force", action="store_true", help="같은 ID가 있으면 덮어쓰기")
     pp = psub.add_parser("preview", help="고정 합성 예문을 실제 번역기·말투로 번역(사용량 소비)")
     pp.add_argument("--persona", metavar="ID", help="미리 볼 말투(생략하면 --agent에 지금 적용되는 말투)")
-    pp.add_argument("--agent", choices=["claude", "codex", "agy"], default="claude",
+    pp.add_argument("--agent", choices=["claude", "codex", "agy", "grok", "kiro"], default="claude",
                     help="관찰하는 CLI(auto 말투·CLI별 설정 판단용, 기본 claude)")
     pp.add_argument("--translator", help="설정 대신 쓸 번역기(설정은 바꾸지 않음)")
     pp.add_argument("--model", help="설정 대신 쓸 모델 ID")

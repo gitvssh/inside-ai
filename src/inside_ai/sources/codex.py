@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..model import Session, Thought, parse_time
+from ..model import Session, Thought, Usage, UsageEvent, count, parse_time
 from ..tail import Chunk
 from .base import load_json, read_first_lines
 
@@ -61,6 +61,47 @@ class CodexSource:
                 session.cwd,
             )
         ]
+
+    def parse_usage(self, session: Session, chunk: Chunk, ctx: dict) -> list[UsageEvent]:
+        """event_msg의 token_count(세션 누적값)와 task_started·task_complete·turn_aborted(턴 경계).
+
+        같은 누적값이 여러 번 기록되므로 직전 누적값과의 차이를 모델 호출 사용량으로 본다.
+        """
+        line = chunk.line
+        if b'"event_msg"' not in line or not any(k in line for k in (b'"token_count"', b'"task_', b'"turn_aborted"')):
+            return []
+        obj = load_json(line)
+        payload = obj.get("payload") if obj and obj.get("type") == "event_msg" else None
+        if not isinstance(payload, dict):
+            return []
+        kind = payload.get("type")
+        when = parse_time(obj.get("timestamp"))
+        if kind in ("task_started", "task_complete", "turn_aborted"):
+            key = f"{kind}:{payload.get('turn_id') or chunk.offset}"
+            return [UsageEvent(self.name, session.session_id, key,
+                               "turn_start" if kind == "task_started" else "turn_end", recorded_at=when)]
+        info = payload.get("info") if kind == "token_count" else None
+        total = info.get("total_token_usage") if isinstance(info, dict) else None
+        if not isinstance(total, dict):
+            return []
+        now = _usage(total)
+        prev = ctx.get("usage_total", Usage())
+        if now == prev:
+            return []
+        ctx["usage_total"] = now
+        delta = Usage(now.input - prev.input, now.cache_read - prev.cache_read,
+                      now.cache_write - prev.cache_write, now.output - prev.output)
+        if min(delta.input, delta.cache_read, delta.cache_write, delta.output) < 0:  # 누적값이 줄어든 경우(초기화)
+            last = info.get("last_token_usage")
+            delta = _usage(last) if isinstance(last, dict) else Usage()
+        key = f"total:{now.total}"
+        return [UsageEvent(self.name, session.session_id, key, "call", delta, when)] if delta else []
+
+
+def _usage(d: dict) -> Usage:
+    """Codex의 input_tokens는 캐시 입력을 포함한다. 겹치지 않게 나눈다(output은 추론 토큰 포함)."""
+    cached, written = count(d.get("cached_input_tokens")), count(d.get("cache_write_input_tokens"))
+    return Usage(max(0, count(d.get("input_tokens")) - cached - written), cached, written, count(d.get("output_tokens")))
 
 
 def _session_meta(path: Path) -> tuple[str, str | None]:

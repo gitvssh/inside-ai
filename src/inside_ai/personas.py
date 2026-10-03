@@ -122,7 +122,7 @@ PERSONAS: dict[str, Persona] = {
     "codex": Persona("gpt-chan", "지피짱", "#1E6BFF", CODEX_PROMPT, "character", "조용한 실무형 반말 캐릭터"),
     "agy": Persona("gemini-chan", "젬쨩", "#2F7DFF", GEMINI_PROMPT, "character", "자신감 있고 살짝 도도한 반말 캐릭터"),
 }
-AGENTS = tuple(PERSONAS)
+AGENTS = (*PERSONAS, "grok", "kiro")  # 말투를 CLI별로 정할 수 있는 관찰 대상(grok·kiro의 auto는 plain)
 AUTO = "auto"
 BUILTIN: dict[str, Persona] = {"plain": PLAIN, "polite": POLITE, **{p.key: p for p in PERSONAS.values()}}
 AUTO_DESCRIPTION = "CLI별 캐릭터(claude→클로드쨩, codex→지피짱, agy→젬쨩)"
@@ -132,7 +132,7 @@ _OFF_VALUES = ("0", "off", "plain", "false")
 _NO_OVERRIDE = ("", "1", "on", "true")
 
 # 창 제목 "<클로드>의 생각은?"에 쓰는 이름. 말투와 관계없이 CLI마다 고정.
-DISPLAY_NAMES = {"claude": "클로드", "codex": "지피티", "agy": "제미나이"}
+DISPLAY_NAMES = {"claude": "클로드", "codex": "지피티", "agy": "제미나이", "grok": "그록", "kiro": "키로"}
 
 ID_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9_-]{0,30}[a-z0-9])?$")
 MAX_FILE_BYTES = 8 << 10

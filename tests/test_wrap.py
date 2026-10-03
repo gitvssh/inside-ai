@@ -77,3 +77,30 @@ def test_tmux_host_command_reruns_ia_inside(tmp_path):
     assert cmd[:4] == ["tmux", "-L", "inside-ai", "-f"]
     assert "IA_HOSTED=1" in cmd and cmd[cmd.index("-c") + 1] == "/w"
     assert cmd[-1].endswith("-m inside_ai claude -c 'a b'")
+
+
+def test_grok_modes():
+    assert (plan("grok", []).mode, plan("grok", []).hint) == ("new", None)
+    p = plan("grok", ["-r", "01a0ff4d-38f6-7fa2-be6b-a1b898a9e703"])
+    assert (p.mode, p.hint) == ("resume", "01a0ff4d-38f6-7fa2-be6b-a1b898a9e703")
+    assert (plan("grok", ["-r", "my title"]).mode, plan("grok", ["-r", "my title"]).hint) == ("resume", None)
+    assert plan("grok", ["-c"]).mode == "resume"
+    assert plan("grok", ["-s", "abc"]).hint == "abc"
+    assert not plan("grok", ["sessions", "list"]).view and not plan("grok", ["login"]).view
+    assert plan("grok", ["버그 고쳐줘"]).view
+
+
+def test_kiro_modes():
+    assert plan("kiro", []).view and plan("kiro", ["chat"]).mode == "new"
+    assert plan("kiro", ["--agent", "dev"]).view
+    p = plan("kiro", ["chat", "--resume-id", "b8f0"])
+    assert (p.mode, p.hint) == ("resume", "b8f0")
+    assert plan("kiro", ["chat", "-r"]).mode == "resume"
+    assert not plan("kiro", ["settings"]).view and not plan("kiro", ["login"]).view
+    assert not plan("kiro", ["chat", "--list-sessions"]).view
+
+
+def test_kiro_runs_kiro_cli_command():
+    from inside_ai.wrap import command_name
+
+    assert command_name("kiro") == "kiro-cli" and command_name("grok") == "grok"

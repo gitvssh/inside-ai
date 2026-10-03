@@ -1,4 +1,4 @@
-"""ia setup: 번역기·말투 선택. 설정 파일의 [translation]·[persona] 키만 고치고 나머지(주석·[gemini] 등)는 그대로 둔다.
+"""ia setup: 번역기·말투·표시 선택. 설정 파일의 [translation]·[persona]·[display] 키만 고치고 나머지(주석·[gemini] 등)는 그대로 둔다.
 
     ia setup                                   # 터미널이면 대화형으로 고른다(번역기 → 말투)
     ia setup --translator agy                  # 에이전트·스크립트용(묻지 않음)
@@ -7,6 +7,7 @@
     ia setup --persona polite                  # 말투만 바꾼다(번역기·모델은 그대로)
     ia setup --persona plain --for-agent codex # 관찰하는 CLI 하나에만 적용
     ia setup --persona inherit --for-agent codex  # 그 CLI의 예외를 지운다
+    ia setup --usage off                       # 생각 창의 토큰 사용량 표시 끄기(--memo off: 메모 표시 끄기)
 
 stdin이 터미널이 아니면 묻지 않는다. API 키는 인자로 받지 않고 출력하거나 저장하지 않는다.
 Claude Code·Codex·agy의 설정, 프로젝트 파일(CLAUDE.md, AGENTS.md, 스킬)은 건드리지 않는다.
@@ -145,6 +146,17 @@ def _persona_line() -> str:
     return f"말투 {st.default}{extra}{hint}"
 
 
+def _display_line() -> str:
+    try:
+        d = config.display_settings()
+    except ValueError as e:
+        return f"표시 설정 오류: {e}"
+    on = {True: "켬", False: "끔"}
+    env = [k for k in config.DISPLAY_KEYS if os.environ.get(f"IA_{k.upper()}")]
+    note = f" (환경변수 {', '.join('IA_' + k.upper() for k in env)} 우선)" if env else ""
+    return f"토큰 표시 {on[d.usage]} · 메모 표시 {on[d.memo]}{note}"
+
+
 def main(args) -> int:
     path = config.config_path()
     try:
@@ -159,10 +171,11 @@ def main(args) -> int:
     if args.for_agent and not args.persona:
         print("ia setup: --for-agent는 --persona와 함께 씁니다.", file=sys.stderr)
         return 2
-    tone: dict = {}
+    shown = {k: getattr(args, k, None) == "on" for k in config.DISPLAY_KEYS if getattr(args, k, None)}
+    tone: dict = {"display": shown} if shown else {}
     if args.persona:
         try:
-            tone = persona_change(args.persona, args.for_agent)
+            tone.update(persona_change(args.persona, args.for_agent))
         except PersonaError as e:
             print(f"ia setup: {e}", file=sys.stderr)
             return 2
@@ -174,10 +187,13 @@ def main(args) -> int:
             print(f"ia setup: {e}", file=sys.stderr)
             return 1
         print(f"{'저장했습니다' if changed else '변경 없음'}: {path}")
-        print(f"  {_persona_line()} · 번역기 {current.provider}(그대로)")
-        if os.environ.get("IA_PERSONA"):
+        if args.persona:
+            print(f"  {_persona_line()} · 번역기 {current.provider}(그대로)")
+        if shown:
+            print(f"  {_display_line()}")
+        if os.environ.get("IA_PERSONA") and args.persona:
             print("  주의: IA_PERSONA 환경변수가 설정 파일보다 우선합니다.")
-        print("  새로 여는 생각 창부터 적용됩니다. 미리보기(사용량 소비): ia persona preview")
+        print("  새로 여는 생각 창부터 적용됩니다." + (" 미리보기(사용량 소비): ia persona preview" if args.persona else ""))
         return 0
 
     model_change: bool
@@ -234,6 +250,8 @@ def main(args) -> int:
     print(f"  번역기 {final.provider} · 모델 {final.model or '기본'} · 제한 {final.timeout:.0f}초 · 전송: {DESTINATION[final.provider]}")
     if final.provider != "none":
         print(f"  {_persona_line()}")
+    if shown:
+        print(f"  {_display_line()}")
     if final.source == "env":
         print("  주의: IA_TRANSLATOR 환경변수가 설정 파일보다 우선합니다.")
     elif final.source == "off":

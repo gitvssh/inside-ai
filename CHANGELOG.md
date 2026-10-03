@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.0 — 2026-10-03
+
+- Token usage in the pane (Claude Code, Codex, agy): each turn's input (cache included), cache hit rate,
+  and output after that turn's thoughts, and a session total pinned at the bottom (terminal scroll
+  region; plain lines when not a terminal). Per-CLI cache accounting is normalized; Claude responses
+  logged once per content block are counted once; Codex cumulative counters that restart are summed
+  per segment. Resumed panes count past turns without reprinting them
+- `ia memo show|add|set|edit|clear|list|path`: a per-project memo (Git top folder; worktrees share the
+  original repository's memo) pinned at the top of the pane and refreshed live. Stored in the config
+  folder only; never sent to agents or translators
+- `[display] usage/memo` switches, `ia setup --usage on|off --memo on|off`, `IA_USAGE`/`IA_MEMO`
+- `ia grok` and `ia kiro` (`kiro-cli`): reasoning-only support for Grok Build CLI and Kiro CLI
+  (Kiro records reasoning text only for some models; a hint is shown when it is redacted)
+- Pane and `watch` output drop terminal control characters found in logs, translations, and memos
+
 ## 0.3.0 — 2026-10-01
 
 - Translation tones: built-in `auto` (character per observed CLI, unchanged default), `plain`, `polite`,

@@ -15,7 +15,11 @@
     [persona.agents]      # 관찰하는 CLI별 예외(선택)
     claude = "polite"
 
-코드에는 개인 환경(비밀 저장소 경로 등)을 두지 않고 이 파일에 둔다. `ia setup`은 [translation]·[persona]의
+    [display]             # 생각 창의 추가 표시(없으면 둘 다 켜짐)
+    usage = true          # 턴별 토큰 사용량과 하단 세션 합계(claude·codex·agy)
+    memo = true           # 창 위쪽에 프로젝트 메모(ia memo)
+
+코드에는 개인 환경(비밀 저장소 경로 등)을 두지 않고 이 파일에 둔다. `ia setup`은 [translation]·[persona]·[display]의
 키만 고치고 나머지 내용은 그대로 둔다. 파일은 UTF-8이다. Windows에서도 위치는 사용자 홈 아래 같은 경로다.
 """
 
@@ -110,6 +114,42 @@ def translation_settings(data: dict | None = None) -> TranslationSettings:
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("번역 timeout은 유한한 양수여야 합니다.")
     return TranslationSettings(provider, model or None, timeout, source)
+
+
+@dataclass(frozen=True)
+class DisplaySettings:
+    usage: bool
+    memo: bool
+
+
+DISPLAY_KEYS = ("usage", "memo")
+_ON = ("1", "on", "true", "yes")
+_OFF = ("0", "off", "false", "no")
+
+
+def parse_switch(value: object, where: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip().lower() in _ON + _OFF:
+        return value.strip().lower() in _ON
+    raise ValueError(f"{where} 값은 on/off(true/false)여야 합니다: {value!r}")
+
+
+def display_settings(data: dict | None = None) -> DisplaySettings:
+    """생각 창 추가 표시. 환경변수 IA_USAGE·IA_MEMO(0/1)가 설정 파일 [display]보다 우선한다. 기본은 둘 다 켜짐."""
+    if data is None:
+        data = load()
+    table = data.get("display", {})
+    if not isinstance(table, dict):
+        raise ValueError("설정 파일의 display가 표([display])가 아닙니다.")
+    values = {}
+    for key in DISPLAY_KEYS:
+        env = os.environ.get(f"IA_{key.upper()}")
+        if env:
+            values[key] = parse_switch(env, f"IA_{key.upper()}")
+        else:
+            values[key] = parse_switch(table.get(key, True), f"[display] {key}")
+    return DisplaySettings(**values)
 
 
 def normalize_provider(name: str) -> str:

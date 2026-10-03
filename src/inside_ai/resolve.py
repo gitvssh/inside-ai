@@ -28,6 +28,8 @@ def _same_dir(a: str | None, b: str | None) -> bool:
 def _matches_hint(provider: str, path: Path, hint: str) -> bool:
     if provider == "agy":
         return path.parents[2].name == hint
+    if provider == "grok":
+        return path.parent.name == hint  # sessions/<cwd>/<세션 ID>/chat_history.jsonl
     if provider == "codex":
         return path.stem.endswith(hint)  # rollout-<시각>-<세션 ID>
     return path.stem == hint

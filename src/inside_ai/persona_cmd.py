@@ -18,7 +18,7 @@ import time
 from dataclasses import replace
 
 from . import config, personas
-from .personas import AGENTS, AUTO, AUTO_DESCRIPTION, BUILTIN, PERSONAS, PersonaError
+from .personas import AGENTS, AUTO, AUTO_DESCRIPTION, BUILTIN, PERSONAS, PLAIN, PersonaError
 
 # 미리보기용 고정 합성 예문(사용자 기록이 아님). 코드·경로·숫자가 그대로 남는지도 함께 보인다.
 SAMPLE = (
@@ -56,7 +56,7 @@ def status() -> dict:
             sel = personas.select(agent, data)
             effective[agent] = {"ok": True, "id": sel.persona.key, "requested": sel.requested, "source": sel.source}
         except PersonaError as e:
-            effective[agent] = {"ok": False, "error": str(e), "fallback": PERSONAS[agent].key}
+            effective[agent] = {"ok": False, "error": str(e), "fallback": PERSONAS.get(agent, PLAIN).key}
     items = [{"id": AUTO, "kind": "builtin", "name": "자동", "description": AUTO_DESCRIPTION}]
     for pid, p in BUILTIN.items():
         items.append({"id": pid, "kind": "builtin", "name": builtin_name(p), "description": p.description})

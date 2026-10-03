@@ -4,7 +4,7 @@ import sqlite3
 from pathlib import Path
 
 from .. import oscompat, own_sessions
-from ..model import Session, Thought, parse_time
+from ..model import Session, Thought, Usage, UsageEvent, count, parse_time
 from ..tail import Chunk, file_mtime
 from .base import load_json, read_first_lines
 
@@ -109,6 +109,33 @@ class AgySource:
                 {"status": obj.get("status")},
             )
         ]
+
+    def parse_usage(self, session: Session, chunk: Chunk, ctx: dict) -> list[UsageEvent]:
+        """PLANNER_RESPONSE의 토큰 수(agy 1.2.15부터 모델 호출마다 기록)와 턴 경계.
+
+        턴은 USER_INPUT에서 시작해 도구 호출이 없는 PLANNER_RESPONSE(최종 답변)에서 끝난다.
+        cache_read_tokens는 input_tokens와 따로 센다(캐시 입력이 input보다 큰 기록이 있음).
+        """
+        line = chunk.line
+        if b'"USER_INPUT"' not in line and b'"PLANNER_RESPONSE"' not in line:
+            return []
+        obj = load_json(line)
+        if not obj:
+            return []
+        step = obj.get("step_index")
+        key = f"step:{step}" if isinstance(step, int) else f"off:{chunk.offset}"
+        when = parse_time(obj.get("created_at"))
+        if obj.get("type") == "USER_INPUT":
+            return [UsageEvent(self.name, session.session_id, key, "turn_start", recorded_at=when)]
+        if obj.get("type") != "PLANNER_RESPONSE":
+            return []
+        out = []
+        u = Usage(count(obj.get("input_tokens")), count(obj.get("cache_read_tokens")), 0, count(obj.get("output_tokens")))
+        if u:
+            out.append(UsageEvent(self.name, session.session_id, key, "call", u, when))
+        if not obj.get("tool_calls") and obj.get("status") in (None, "DONE"):
+            out.append(UsageEvent(self.name, session.session_id, f"end:{key}", "turn_end", recorded_at=when))
+        return out
 
 
 def _first_file_uri(uris: object, windows: bool | None = None) -> str | None:

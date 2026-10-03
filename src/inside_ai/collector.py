@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from . import own_sessions
-from .model import Session, Thought
+from .model import Session, Thought, UsageEvent
 from .sources.base import Source
 from .tail import FileTail
 
@@ -55,6 +55,7 @@ class Collector:
     - 시작 후 새로 생긴 세션 파일은 처음부터 읽는다.
     - 필터에서 빠진 세션은 다음 탐색 때 다시 검사한다.
     - 같은 uid·같은 내용은 한 번만 낸다. 같은 uid의 내용이 바뀌면 "revised"로 낸다.
+    - usage=True면 기록 순서대로 토큰 사용량(UsageEvent)도 함께 낸다(parse_usage가 있는 도구만, uid로 한 번만).
     """
 
     def __init__(
@@ -65,6 +66,7 @@ class Collector:
         session_filter: Callable[[Session], bool] | None = None,
         rediscover_every: float = 5.0,
         clock: Callable[[], float] = time.time,
+        usage: bool = False,
     ):
         self.sources = list(sources)
         self.since_seconds = since_seconds
@@ -72,6 +74,7 @@ class Collector:
         self.session_filter = session_filter
         self.rediscover_every = rediscover_every
         self.clock = clock
+        self.usage = usage
         self.tracked: dict[Path, _Tracked] = {}
         self.seen: dict[str, str] = {}
         self.stats = Stats()
@@ -134,10 +137,10 @@ class Collector:
             self.tracked[session.path] = _Tracked(source, session, FileTail(session.path, start_at=start_at))
             self.stats.sessions = len(self.tracked)
 
-    def poll(self) -> list[Event]:
+    def poll(self) -> list[Event | UsageEvent]:
         if self.sources and self.clock() - self._last_discover >= self.rediscover_every:
             self.discover()
-        events: list[Event] = []
+        events: list[Event | UsageEvent] = []
         for path, tr in list(self.tracked.items()):
             if is_own_translation(tr.source, path):
                 del self.tracked[path]
@@ -159,8 +162,23 @@ class Collector:
                     events.append(
                         Event(th, "new" if prev is None else "revised", observed, tr.tail.offset)
                     )
+                if self.usage:
+                    events.extend(self._usage(tr, chunk))
         self.stats.sessions = len(self.tracked)
         return events
+
+    def _usage(self, tr: _Tracked, chunk) -> list[UsageEvent]:
+        parse = getattr(tr.source, "parse_usage", None)
+        if parse is None:
+            return []
+        out = []
+        for ev in parse(tr.session, chunk, tr.ctx):
+            if ev.uid in self.seen:
+                self.stats.duplicates += 1
+                continue
+            self.seen[ev.uid] = ""
+            out.append(ev)
+        return out
 
     def run(self, interval: float = 0.5) -> Iterable[Event]:
         self.discover()

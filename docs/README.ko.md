@@ -3,7 +3,8 @@
 영문 개요는 [README.md](../README.md).
 
 CLI 에이전트(agy·Claude Code·Codex)가 남기는 생각 기록을 옆 터미널에서 보여주는 도구.
-기존 CLI는 수정하지 않고, 각 CLI가 로컬에 쓰는 세션 기록 파일을 읽기만 한다.
+턴별 토큰 사용량·세션 누적과 캐시 적중률, 프로젝트 메모도 함께 보여 줄 수 있다. Grok Build CLI와 Kiro CLI는
+생각 보기만 지원한다. 기존 CLI는 수정하지 않고, 각 CLI가 로컬에 쓰는 세션 기록 파일을 읽기만 한다.
 
 ## 설치
 
@@ -52,6 +53,8 @@ ia doctor             # 오프라인 점검. --probe를 붙이면 합성 문장 
 ia claude            # 원래 옵션 그대로: ia claude --resume <id>, ia claude -c
 ia codex             # ia codex resume --last
 ia agy               # ia agy --conversation <id>
+ia grok              # 생각 보기만(토큰 표시 없음). ia grok -c, ia grok -r <세션 ID>
+ia kiro              # kiro-cli를 실행. 생각 보기만. ia kiro chat --resume-id <id>
 ```
 
 - 화면을 세로로 나눠 오른쪽에 **이 세션 전용** 생각 창(`<클로드>의 생각은?` / `<지피티>` / `<제미나이>`)을 연다.
@@ -72,6 +75,25 @@ ia agy               # ia agy --conversation <id>
 - `claude mcp`, `codex login`, `--version` 같은 대화가 아닌 명령은 창 없이 그대로 실행한다.
 - 끄기: `IA_OFF=1 ia claude`(창 없이 실행), `IA_NO_PANE=1`(창 자동 열기만 끔).
 - 연결 기록·번역 캐시: `~/.local/state/inside-ai/` (7일 지난 연결 기록은 자동 정리).
+
+## 토큰 사용량·프로젝트 메모
+
+```bash
+ia memo add "목표: 0.4에서 토큰 표시"   # 이 프로젝트 메모에 한 줄 추가(- 를 주면 표준 입력)
+ia memo                                # 보기. ia memo set "...", ia memo edit, ia memo clear, ia memo list
+ia setup --usage off                   # 토큰 표시 끄기(on으로 다시 켬). 메모 표시: --memo off
+IA_USAGE=0 ia claude                   # 이번 실행만 끄기(IA_MEMO=0도 같음)
+```
+
+- **토큰 사용량**(Claude Code·Codex·agy): 한 턴이 끝나면 그 턴의 생각 아래에 `이번 턴 · 입력 45K · 캐시 91% · 출력 2.3K`를
+  적고, 창 맨 아래에 `세션 누적 · …`을 고정해 둔다. 입력은 캐시를 포함한 전체, 캐시는 입력 중 캐시에서 읽은 비율이다.
+  CLI가 이미 기록하는 숫자를 읽으며, CLI마다 다른 캐시 집계 방식을 같은 기준으로 맞춘다. 이어하기(`--resume`)로 열면
+  지난 턴 줄은 다시 적지 않고 누적에만 더한다. agy는 1.2.15부터 토큰을 기록한다.
+- **프로젝트 메모**: 프로젝트(작업 폴더가 속한 Git 최상위 폴더, worktree는 원래 저장소와 같은 메모)마다 짧은 글을 두고
+  생각 창 위쪽에 고정해 보여 준다. 메모를 고치면 열린 창에도 바로 반영된다. 메모는 `~/.config/inside-ai/memos/`에만
+  저장하고 프로젝트 폴더·CLI 설정에 쓰거나 에이전트·번역기에 보내지 않는다.
+- 터미널이 아니거나 창이 너무 작으면 고정하지 않고, 턴 줄 아래에 세션 누적을 함께 적는다.
+- 설정 파일의 `[display]` 표(`usage`, `memo`, 기본은 둘 다 `true`)에 저장된다.
 
 ## 전체 감시·목록
 

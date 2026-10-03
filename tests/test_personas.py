@@ -38,7 +38,8 @@ def write(path: Path, text: str):
 
 def test_default_is_auto_character_per_observed_cli(cfg):
     got = {a: personas.select(a) for a in personas.AGENTS}
-    assert {a: s.persona.key for a, s in got.items()} == {"claude": "claude-chan", "codex": "gpt-chan", "agy": "gemini-chan"}
+    assert {a: s.persona.key for a, s in got.items()} == {"claude": "claude-chan", "codex": "gpt-chan", "agy": "gemini-chan",
+                                                         "grok": "plain", "kiro": "plain"}
     assert all(s.source == "builtin" for s in got.values())
     assert not personas.persona_settings().configured
 

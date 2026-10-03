@@ -11,6 +11,7 @@ npm의 .cmd 런처는 cmd.exe를 거치지 않도록 검증한 패키지 엔트�
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -23,7 +24,13 @@ from pathlib import Path
 from . import links, oscompat
 from .state import state_dir
 
-PROVIDERS = ("claude", "codex", "agy")
+PROVIDERS = ("claude", "codex", "agy", "grok", "kiro")
+COMMANDS = {"kiro": "kiro-cli"}  # ia 이름과 실제 명령 이름이 다른 CLI
+
+
+def command_name(provider: str) -> str:
+    return COMMANDS.get(provider, provider)
+
 
 # 대화 세션을 만들지 않는 하위 명령: 옆 창 없이 그대로 실행한다.
 _PASSTHROUGH = {
@@ -41,7 +48,14 @@ _PASSTHROUGH = {
         "agent", "agents", "changelog", "help", "install", "mcp", "mic-serve", "models", "plugin", "plugins",
         "remote-control", "update",
     },
+    "grok": {
+        "clone", "completions", "cursor-worker", "dashboard", "doctor", "du", "disk-usage", "export", "help",
+        "inspect", "leader", "login", "logout", "mcp", "memory", "models", "plugin", "sessions", "setup", "trace",
+        "update", "usage", "version", "v", "worktree", "wrap",
+    },
 }
+# kiro-cli는 chat(또는 하위 명령 없음)만 대화 세션을 만든다
+_KIRO_SESSION = {"chat"}
 _INFO_FLAGS = {"-h", "--help", "-v", "-V", "--version"}
 
 
@@ -69,6 +83,8 @@ def plan(provider: str, args: list[str]) -> Plan:
     if any(a in _INFO_FLAGS for a in args):
         return Plan(False, args=args)
     first = next((a for a in args if not a.startswith("-")), None)
+    if provider == "kiro":
+        return _plan_kiro(args, first)
     if first in _PASSTHROUGH[provider] and args and args[0] == first:
         return Plan(False, args=args)
 
@@ -95,12 +111,41 @@ def plan(provider: str, args: list[str]) -> Plan:
             return Plan(True, "resume" if args[0] == "resume" else "new", hint, args)
         return Plan(True, "new", None, args)
 
+    if provider == "grok":
+        has_sid, sid = _value(args, "-s", "--session-id")
+        has_resume, rid = _value(args, "-r", "--resume")
+        if _value(args, "--fork-session")[0]:
+            return Plan(True, "new", sid if has_sid else None, args)
+        if has_resume and rid and _UUID.fullmatch(rid):
+            return Plan(True, "resume", rid, args)
+        if has_resume or _value(args, "-c", "--continue")[0]:
+            return Plan(True, "resume", None, args)  # 제목으로 이어 할 때도 최근 갱신 세션으로 찾는다
+        return Plan(True, "new", sid if has_sid else None, args)
+
     # agy
     has_conv, cid = _value(args, "--conversation")
     if has_conv and cid:
         return Plan(True, "resume", cid, args)
     if _value(args, "-c", "--continue")[0]:
         return Plan(True, "resume", None, args)
+    return Plan(True, "new", None, args)
+
+
+_UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+
+def _plan_kiro(args: list[str], first: str | None) -> Plan:
+    if first is not None and first not in _KIRO_SESSION and args and args[0] == first:
+        return Plan(False, args=args)  # settings·login·doctor 등
+    if first is not None and first in _KIRO_SESSION and args[0] != first:
+        return Plan(False, args=args)  # 전역 옵션 뒤의 하위 명령은 판단하지 않고 그대로 실행
+    has_rid, rid = _value(args, "--resume-id")
+    if has_rid and rid:
+        return Plan(True, "resume", rid, args)
+    if _value(args, "-r", "--resume")[0] or _value(args, "--resume-picker")[0]:
+        return Plan(True, "resume", None, args)
+    if any(a in ("-l", "--list-sessions", "--list-models") for a in args):
+        return Plan(False, args=args)
     return Plan(True, "new", None, args)
 
 
@@ -213,9 +258,10 @@ def open_pane(link_id: str, cwd: str) -> str:
 
 
 def main(provider: str, args: list[str]) -> int:
-    command = oscompat.find_command(provider)
+    name = command_name(provider)
+    command = oscompat.find_command(name)
     if not command.found:
-        print(f"ia: '{provider}' 명령을 찾을 수 없습니다.", file=sys.stderr)
+        print(f"ia: '{name}' 명령을 찾을 수 없습니다.", file=sys.stderr)
         return 127
     if not command.usable:
         print(f"ia: {command.problem}", file=sys.stderr)
@@ -242,7 +288,7 @@ def main(provider: str, args: list[str]) -> int:
         try:
             return oscompat.run_foreground([*command.argv, *final_args])
         except OSError as e:
-            print(f"ia: '{provider}' 실행 실패: {e}", file=sys.stderr)
+            print(f"ia: '{name}' 실행 실패: {e}", file=sys.stderr)
             return 126
-    os.execv(command.path, [provider, *final_args])
+    os.execv(command.path, [name, *final_args])
     return 0  # 도달하지 않음
